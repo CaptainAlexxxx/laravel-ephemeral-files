@@ -1,8 +1,7 @@
 <?php
 
-use Illuminate\Foundation\Inspiring;
-use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Schedule;
 
-Artisan::command('inspire', function () {
-    $this->comment(Inspiring::quote());
-})->purpose('Display an inspiring quote');
+// withoutOverlapping is just to avoid wasted work: the conditional delete in
+// FileDeletionService makes concurrent runs safe either way.
+Schedule::command('files:purge-expired')->everyMinute()->withoutOverlapping();
