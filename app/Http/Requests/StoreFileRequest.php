@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Support\FileType;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Validator;
 
@@ -18,7 +19,7 @@ class StoreFileRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'file' => ['required', 'file', 'max:'.config('files.max_size_kb'), 'extensions:pdf,docx', 'mimes:pdf,docx'],
+            'file' => ['required', 'file', 'max:'.config('files.max_size_kb'), 'extensions:pdf,docx'],
         ];
     }
 
@@ -34,15 +35,31 @@ class StoreFileRequest extends FormRequest
                 }
 
                 $file = $this->file('file');
+                $name = $file->getClientOriginalName();
 
-                // Both rules accept any allowed type independently, so a PDF renamed to .docx passes them.
-                if ($file->guessExtension() !== strtolower($file->getClientOriginalExtension())) {
+                // MySQL rejects it on insert with a 500
+                if (! mb_check_encoding($name, 'UTF-8')) {
+                    $validator->errors()->add('file', 'The file name is not valid UTF-8.');
+
+                    return;
+                }
+
+                $type = FileType::detect($file);
+
+                if ($type === null) {
+                    $validator->errors()->add('file', 'The file must be a PDF or DOCX document.');
+
+                    return;
+                }
+
+                // a PDF renamed to .docx passes the extensions rule, the content has to match too
+                if ($type !== strtolower($file->getClientOriginalExtension())) {
                     $validator->errors()->add('file', 'The file content does not match its extension.');
 
                     return;
                 }
 
-                if (mb_strlen($file->getClientOriginalName()) > 255) {
+                if (mb_strlen($name) > 255) {
                     $validator->errors()->add('file', 'The file name must not be longer than 255 characters.');
                 }
             },

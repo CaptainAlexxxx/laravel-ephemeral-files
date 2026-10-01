@@ -38,7 +38,7 @@ Source of truth for implementation, tests and review. Requirement IDs are stable
 - RabbitMQ replaced by the `database`, `redis` or `sync` driver because it is easier to run. The notification sets the `rabbitmq` connection explicitly.
 - Size limit only in Laravel: nginx answers 413, or PHP drops the body when `post_max_size` is exceeded and `$_FILES` arrives empty. nginx and PHP allow 12M, Laravel cuts at 10M and returns JSON.
 - Type checked by extension only. Content is sniffed, and the detected type must also match the extension.
-- DOCX is a ZIP container and some libmagic builds report `application/zip`. Checked with a real Word file in the container: reported as `wordprocessingml`, so generic ZIP stays rejected.
+- DOCX is a ZIP container and libmagic reports `application/zip` when large `docProps/` entries come before `word/`. On `application/zip` the archive must contain `[Content_Types].xml` and `word/document.xml` to count as DOCX, any other ZIP is rejected.
 - Notification lost or duplicated: published after commit and the broker is down, or published twice when manual delete and purge race. Covered by publishing inside the delete transaction and a conditional delete, see Decisions.
 - Queued notification holding an Eloquent model: the worker re-fetches the already deleted row and fails. The notification carries plain values.
 - Physical file deletion failing silently. Failure is logged with the file id and path.

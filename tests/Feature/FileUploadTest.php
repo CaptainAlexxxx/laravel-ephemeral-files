@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\StoredFile;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 use Tests\Support\MakesFileFixtures;
@@ -112,6 +113,61 @@ class FileUploadTest extends TestCase
 
         $response->assertStatus(422);
         $this->assertDatabaseCount('stored_files', 0);
+    }
+
+    public function test_docx_that_libmagic_reports_as_zip_is_accepted_with_the_docx_mime(): void
+    {
+        $file = $this->uploadedFileFromBytes($this->docxBytesWithDocPropsFirst(), 'contract.docx');
+
+        $response = $this->postJson('/files', ['file' => $file]);
+
+        $response->assertStatus(201);
+        $row = StoredFile::first();
+        $this->assertSame('application/vnd.openxmlformats-officedocument.wordprocessingml.document', $row->mime_type);
+        $this->assertStringEndsWith('.docx', $row->path);
+    }
+
+    public function test_docx_structured_zip_renamed_to_pdf_is_rejected(): void
+    {
+        $file = $this->uploadedFileFromBytes($this->docxBytesWithDocPropsFirst(), 'contract.pdf');
+
+        $response = $this->postJson('/files', ['file' => $file]);
+
+        $response->assertStatus(422);
+        $this->assertDatabaseCount('stored_files', 0);
+    }
+
+    public function test_file_name_with_invalid_utf8_is_rejected(): void
+    {
+        $file = $this->uploadedFileFromBytes($this->minimalPdfBytes(), "\xff.pdf");
+
+        $response = $this->postJson('/files', ['file' => $file]);
+
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors(['file' => 'The file name is not valid UTF-8.']);
+        $this->assertDatabaseCount('stored_files', 0);
+    }
+
+    public function test_expires_at_is_exactly_created_at_plus_ttl(): void
+    {
+        // every clock read moves one second forward, so two separate now() calls cannot match
+        $start = Carbon::parse('2026-01-01 00:00:00');
+        $reads = 0;
+        Carbon::setTestNow(function () use ($start, &$reads) {
+            return $start->copy()->addSeconds($reads++);
+        });
+
+        $file = $this->uploadedFileFromBytes($this->minimalPdfBytes(), 'report.pdf');
+
+        $this->postJson('/files', ['file' => $file])->assertStatus(201);
+
+        Carbon::setTestNow();
+
+        $row = StoredFile::first();
+        $this->assertSame(
+            $row->created_at->copy()->addMinutes(config('files.ttl_minutes'))->format('Y-m-d H:i:s'),
+            $row->expires_at->format('Y-m-d H:i:s')
+        );
     }
 
     public function test_upload_response_is_json_not_a_redirect(): void

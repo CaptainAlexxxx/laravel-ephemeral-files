@@ -48,6 +48,29 @@ PDF;
     }
 
     /**
+     * A valid DOCX with a few KB of docProps/ before word/, which libmagic reports as plain application/zip.
+     */
+    protected function docxBytesWithDocPropsFirst(): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'docx');
+
+        $zip = new ZipArchive;
+        $zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+        $zip->addFromString('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>');
+        $zip->addFromString('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+        $zip->addFromString('docProps/core.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"/>');
+        // incompressible bytes push word/ past the window libmagic searches
+        $zip->addFromString('docProps/thumbnail.jpeg', random_bytes(8192));
+        $zip->addFromString('word/document.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body></w:document>');
+        $zip->close();
+
+        $bytes = file_get_contents($path);
+        unlink($path);
+
+        return $bytes;
+    }
+
+    /**
      * A ZIP that is not a Word document: libmagic reports plain application/zip.
      */
     protected function genericZipBytes(): string
