@@ -85,6 +85,8 @@ return [
                     'vhost' => env('RABBITMQ_VHOST', '/'),
                 ],
             ],
+            // the deletion notice must publish inside the delete transaction, see FileDeletionService
+            'after_commit' => false,
         ],
 
         'deferred' => [
