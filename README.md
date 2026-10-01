@@ -13,7 +13,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-The first start installs Composer dependencies, generates the app key and runs migrations inside the container, so it takes a minute or two. `docker compose ps` shows `app` as `healthy` when it is done.
+The first start installs Composer dependencies, generates the app key and runs migrations inside the container, so it takes a few minutes (about 5 on a cold Linux machine). `docker compose ps` shows `app` as `healthy` when it is done.
 
 | What | URL | Credentials |
 |---|---|---|
