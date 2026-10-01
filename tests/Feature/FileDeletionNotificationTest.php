@@ -8,6 +8,7 @@ use App\Notifications\FileDeletedNotification;
 use App\Services\FileDeletionService;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Mail\Markdown;
 use Illuminate\Notifications\AnonymousNotifiable;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
@@ -91,6 +92,25 @@ class FileDeletionNotificationTest extends TestCase
 
         $this->assertStringNotContainsString('href="http:evil.example"', $html);
         $this->assertStringContainsString('[click](http:evil.example).pdf', $html);
+    }
+
+    public function test_the_text_part_shows_the_file_name_literally_with_no_escape_artifacts(): void
+    {
+        $notification = new FileDeletedNotification(
+            originalName: 'my_report (1).pdf',
+            size: 1024,
+            reason: DeletionReason::Manual,
+            uploadedAt: CarbonImmutable::now(),
+            deletedAt: CarbonImmutable::now(),
+        );
+
+        $message = $notification->toMail(new AnonymousNotifiable);
+        $markdown = app(Markdown::class)->theme($message->theme ?: app(Markdown::class)->getTheme());
+        $text = $markdown->renderText($message->markdown, $message->data());
+
+        $this->assertStringContainsString('File: my_report (1).pdf', $text);
+        $this->assertStringNotContainsString('\\_', $text);
+        $this->assertStringNotContainsString('&#', $text);
     }
 
     public function test_running_the_purge_command_twice_in_a_row_is_idempotent(): void

@@ -179,6 +179,45 @@ class FileUploadTest extends TestCase
         $response->assertHeader('content-type', 'application/json');
     }
 
+    public function test_stored_path_is_a_uuid_and_never_contains_the_original_name(): void
+    {
+        $file = $this->uploadedFileFromBytes($this->minimalPdfBytes(), 'my secret report.pdf');
+
+        $this->postJson('/files', ['file' => $file])->assertStatus(201);
+
+        $row = StoredFile::first();
+
+        $this->assertMatchesRegularExpression('#^files/[0-9a-f-]{36}\.(pdf|docx)$#', $row->path);
+        $this->assertStringNotContainsString('secret', $row->path);
+        $this->assertSame('my secret report.pdf', $row->original_name);
+    }
+
+    public function test_path_traversal_in_the_original_file_name_does_not_affect_the_stored_path(): void
+    {
+        $file = $this->uploadedFileFromBytes($this->minimalPdfBytes(), '../../etc/passwd.pdf');
+
+        $this->postJson('/files', ['file' => $file])->assertStatus(201);
+
+        $row = StoredFile::first();
+
+        $this->assertMatchesRegularExpression('#^files/[0-9a-f-]{36}\.pdf$#', $row->path);
+        $this->assertStringNotContainsString('..', $row->path);
+        $this->assertSame('passwd.pdf', $row->original_name);
+    }
+
+    public function test_stored_files_are_not_reachable_over_a_public_url(): void
+    {
+        $file = $this->uploadedFileFromBytes($this->minimalPdfBytes(), 'report.pdf');
+
+        $this->postJson('/files', ['file' => $file])->assertStatus(201);
+
+        $row = StoredFile::first();
+
+        $this->get('/storage/'.$row->path)->assertStatus(404);
+        $response = $this->get('/'.$row->path);
+        $this->assertNotEquals(200, $response->getStatusCode());
+    }
+
     protected function pdfBytesOfSize(int $totalBytes): string
     {
         $header = "%PDF-1.4\n";

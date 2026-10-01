@@ -3,6 +3,7 @@
 namespace Tests\Support;
 
 use Illuminate\Http\UploadedFile;
+use PHPUnit\Framework\Attributes\After;
 use ZipArchive;
 
 /**
@@ -11,6 +12,21 @@ use ZipArchive;
  */
 trait MakesFileFixtures
 {
+    /** @var list<string> */
+    private array $tempFixturePaths = [];
+
+    #[After]
+    protected function cleanUpTempFixtures(): void
+    {
+        foreach ($this->tempFixturePaths as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+
+        $this->tempFixturePaths = [];
+    }
+
     protected function minimalPdfBytes(): string
     {
         return <<<'PDF'
@@ -48,7 +64,7 @@ PDF;
     }
 
     /**
-     * A valid DOCX with a few KB of docProps/ before word/, which libmagic reports as plain application/zip.
+     * A valid DOCX with a few KB of docProps/ before word/, which libmagic reads as plain zip.
      */
     protected function docxBytesWithDocPropsFirst(): string
     {
@@ -92,11 +108,16 @@ PDF;
      * Illuminate\Http\Testing\File (what UploadedFile::fake()->createWithContent() returns) overrides
      * getMimeType() to guess from the filename extension, never touching real content. To exercise the
      * app's real finfo-based sniffing, wrap a real temp file in a plain UploadedFile with test mode on.
+     *
+     * The backing temp file has to outlive this method call for the request to read it, so it is
+     * tracked here and removed in cleanUpTempFixtures() instead of being unlinked immediately.
      */
     protected function uploadedFileFromBytes(string $bytes, string $clientName): UploadedFile
     {
         $path = tempnam(sys_get_temp_dir(), 'upload');
         file_put_contents($path, $bytes);
+
+        $this->tempFixturePaths[] = $path;
 
         return new UploadedFile($path, $clientName, null, null, true);
     }
