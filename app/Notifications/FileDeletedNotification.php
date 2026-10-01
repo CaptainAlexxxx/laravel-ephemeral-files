@@ -8,6 +8,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
+use Illuminate\Support\HtmlString;
 use Illuminate\Support\Number;
 
 /**
@@ -43,7 +44,7 @@ class FileDeletedNotification extends Notification implements ShouldQueue
 
         return (new MailMessage)
             ->subject('File deleted: '.$this->originalName)
-            ->line('File: '.$this->escapeMarkdown($this->originalName))
+            ->line($this->fileNameLine())
             ->line('Size: '.Number::fileSize($this->size, 1))
             ->line('Reason: '.match ($this->reason) {
                 DeletionReason::Manual => 'Deleted manually',
@@ -53,9 +54,17 @@ class FileDeletedNotification extends Notification implements ShouldQueue
             ->line('Deleted at: '.$this->deletedAt->utc()->format($format));
     }
 
-    // the name is user input and mail lines are rendered as markdown
-    private function escapeMarkdown(string $text): string
+    // numeric entities survive CommonMark parsing untouched (no markdown syntax) but
+    // get html_entity_decode'd back to plain characters in the text part, so both
+    // parts show the name with no backslashes and no live markdown/link syntax
+    private function fileNameLine(): HtmlString
     {
-        return addcslashes($text, '\\`*_[]()!~');
+        $name = strtr(e($this->originalName), [
+            '\\' => '&#92;', '`' => '&#96;', '*' => '&#42;', '_' => '&#95;',
+            '[' => '&#91;', ']' => '&#93;', '(' => '&#40;', ')' => '&#41;',
+            '!' => '&#33;', '~' => '&#126;',
+        ]);
+
+        return new HtmlString('File: '.$name);
     }
 }
