@@ -6,9 +6,10 @@ ARG GID=1000
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libzip-dev \
         libsqlite3-dev \
+        libicu-dev \
         unzip \
         git \
-    && docker-php-ext-install pdo_mysql pdo_sqlite sockets bcmath zip \
+    && docker-php-ext-install pdo_mysql pdo_sqlite sockets bcmath zip intl \
     && docker-php-ext-enable opcache \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
