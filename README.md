@@ -4,6 +4,8 @@ Temporary storage for PDF and DOCX files. Every file is deleted 24 hours after u
 
 Laravel 13, PHP 8.4, MySQL 8.4, RabbitMQ 3, Bootstrap 5 + jQuery, Docker Compose.
 
+![File management page](docs/screenshots/files.png)
+
 ## Quick start
 
 Requires Docker with Compose v2. Nothing else on the host.
@@ -32,6 +34,10 @@ Ports are bound to `127.0.0.1` only. Change `APP_PORT` in `.env` if 8080 is take
 2. Try a file over 10 MB, or a text file renamed to `.pdf`: you get a validation error.
 3. Open http://localhost:8080/files. The file is listed with its expiry time. Delete it.
 4. Open Mailpit at http://localhost:8025: there is an email to `NOTIFY_EMAIL` saying the file was deleted manually.
+
+| Upload | Deletion notice |
+|---|---|
+| ![Upload page](docs/screenshots/upload.png) | ![Deletion notice in Mailpit](docs/screenshots/mail.png) |
 
 **Automatic deletion without waiting 24 hours.** Set a short TTL in `.env`. The TTL is applied at upload time and php-fpm reads `.env` on every request, so no restart is needed:
 
@@ -88,6 +94,16 @@ Key decisions. The full list with rejected alternatives is in [docs/TASK.md](doc
 - **The notification carries plain values.** The row no longer exists when the worker runs, so a serialized model could not be loaded back.
 - **File type comes from content.** The detected type must be PDF or DOCX and must match the extension. Files are stored on a private disk under generated UUID names. Original names are only displayed, always escaped.
 - **Size limit is enforced by Laravel.** nginx and PHP accept up to 12 MB, Laravel rejects above 10 MB with a JSON 422. Anything over 12 MB is cut by nginx with 413, which the upload page also handles.
+
+## Trade-offs I would expect questions about
+
+- **`FileType` uses static methods.** It is a pure function of the file bytes with no state and no I/O beyond reading the upload, so there is nothing to swap or mock. Tests run it on real files. If detection ever needed configuration or an external service, it would become an injected class.
+- **Services use facades (`DB`, `Storage`, `Notification`) instead of injected contracts.** This is the Laravel default and the test fakes (`Storage::fake()`, `Notification::fake()`) cover them. Injecting `ConnectionInterface` and `Filesystem\Factory` would add constructor noise without changing what can be tested here.
+- **No interfaces.** Every service has exactly one implementation. An interface per class would be ceremony; one can be extracted the day a second implementation exists.
+- **Hard delete, no soft deletes.** The task says files are deleted. The notice carries everything worth keeping (name, size, reason, times), so a soft-deleted row would only be dead data.
+- **RabbitMQ through a Laravel queue driver, not a hand-written publisher.** Retries, failed jobs and queued notifications come with the framework. The cost is that the driver does not use publisher confirms, so a message can in theory be lost in flight after the broker accepted the connection. That is far less likely than a broker outage, which is covered.
+- **Publish inside the transaction holds a row lock for the duration of the publish.** That is a few milliseconds per file and only affects concurrent deletes of the same file, which is the race it is meant to serialise.
+- **`APP_DEBUG=true` and `guest/guest` for RabbitMQ.** Local development defaults so the stack starts with one command. Ports are bound to `127.0.0.1`. A production setup would use real credentials and debug off.
 
 ## Known limits
 
