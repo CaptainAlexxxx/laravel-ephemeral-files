@@ -43,7 +43,7 @@ class FileDeletedNotification extends Notification implements ShouldQueue
 
         return (new MailMessage)
             ->subject('File deleted: '.$this->originalName)
-            ->line('File: '.$this->originalName)
+            ->line('File: '.$this->escapeMarkdown($this->originalName))
             ->line('Size: '.Number::fileSize($this->size, 1))
             ->line('Reason: '.match ($this->reason) {
                 DeletionReason::Manual => 'Deleted manually',
@@ -51,5 +51,11 @@ class FileDeletedNotification extends Notification implements ShouldQueue
             })
             ->line('Uploaded at: '.$this->uploadedAt->utc()->format($format))
             ->line('Deleted at: '.$this->deletedAt->utc()->format($format));
+    }
+
+    // the name is user input and mail lines are rendered as markdown
+    private function escapeMarkdown(string $text): string
+    {
+        return addcslashes($text, '\\`*_[]()!~');
     }
 }

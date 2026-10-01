@@ -6,6 +6,7 @@ use App\Enums\DeletionReason;
 use App\Models\StoredFile;
 use App\Notifications\FileDeletedNotification;
 use App\Services\FileDeletionService;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Notifications\AnonymousNotifiable;
 use Illuminate\Support\Facades\Notification;
@@ -74,6 +75,22 @@ class FileDeletionNotificationTest extends TestCase
         $this->deleteJson("/files/{$file->id}")->assertStatus(404);
 
         Notification::assertSentTimes(FileDeletedNotification::class, 1);
+    }
+
+    public function test_markdown_in_the_file_name_is_not_rendered_as_a_link_in_the_email(): void
+    {
+        $notification = new FileDeletedNotification(
+            originalName: '[click](http:evil.example).pdf',
+            size: 1024,
+            reason: DeletionReason::Manual,
+            uploadedAt: CarbonImmutable::now(),
+            deletedAt: CarbonImmutable::now(),
+        );
+
+        $html = (string) $notification->toMail(new AnonymousNotifiable)->render();
+
+        $this->assertStringNotContainsString('href="http:evil.example"', $html);
+        $this->assertStringContainsString('[click](http:evil.example).pdf', $html);
     }
 
     public function test_running_the_purge_command_twice_in_a_row_is_idempotent(): void
