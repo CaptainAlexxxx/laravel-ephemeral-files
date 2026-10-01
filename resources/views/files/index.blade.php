@@ -10,7 +10,7 @@
     @if ($files->total() === 0)
         <p id="empty-state">No files yet. <a href="{{ route('files.create') }}">Upload one</a>.</p>
     @else
-        <table class="table table-striped" id="files-table" data-previous-page-url="{{ $files->previousPageUrl() }}">
+        <table class="table table-striped" id="files-table">
             <thead>
                 <tr>
                     <th>Name</th>
@@ -45,14 +45,7 @@
             const $table = $('#files-table');
 
             function afterRowRemoved() {
-                if ($table.find('tbody tr').length > 0) {
-                    return;
-                }
-
-                const previousPageUrl = $table.data('previous-page-url');
-                if (previousPageUrl) {
-                    location.href = previousPageUrl;
-                } else {
+                if ($table.find('tbody tr').length === 0) {
                     location.reload();
                 }
             }
