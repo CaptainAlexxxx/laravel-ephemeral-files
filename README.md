@@ -103,12 +103,12 @@ Key decisions. The full list with rejected alternatives is in [docs/TASK.md](doc
 - **Hard delete, no soft deletes.** The task says files are deleted. The notice carries everything worth keeping (name, size, reason, times), so a soft-deleted row would only be dead data.
 - **RabbitMQ through a Laravel queue driver, not a hand-written publisher.** Retries, failed jobs and queued notifications come with the framework. The cost is that the driver does not use publisher confirms, so a message can in theory be lost in flight after the broker accepted the connection. That is far less likely than a broker outage, which is covered.
 - **Publish inside the transaction holds a row lock for the duration of the publish.** That is a few milliseconds per file and only affects concurrent deletes of the same file, which is the race it is meant to serialise.
+- **Expired files are removed within a minute of `expires_at`.** That is the scheduler granularity, and for a 24 hour retention it is 0.07%. A run with nothing to delete costs one indexed query on `expires_at`; when there is work, rows are processed in chunks of 100 with `chunkById`, so memory stays flat however many files expire at once. Running the purge every few seconds would add queries without making retention any more correct.
 - **`APP_DEBUG=true` and `guest/guest` for RabbitMQ.** Local development defaults so the stack starts with one command. Ports are bound to `127.0.0.1`. A production setup would use real credentials and debug off.
 
 ## Known limits
 
 - No authentication: anyone who can open the app can upload and delete. The task does not ask for users.
-- A file is deleted between 24 hours and 24 hours plus one minute after upload, because of the sweep interval.
 - If the process dies after the delete transaction commits but before the file is removed from disk, the file stays on disk without a row and nothing logs it. A periodic orphan cleanup would close this, it is left out of scope.
 - `.env.example` has `APP_DEBUG=true`: this is a local development stack and error pages show stack traces.
 
