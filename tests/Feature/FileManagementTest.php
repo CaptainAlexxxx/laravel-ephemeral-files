@@ -60,6 +60,29 @@ class FileManagementTest extends TestCase
         Notification::assertSentTimes(FileDeletedNotification::class, 1);
     }
 
+    public function test_expired_file_waiting_for_purge_is_labelled_as_expired(): void
+    {
+        StoredFile::factory()->expired()->create();
+
+        $response = $this->get('/files');
+
+        $response->assertOk();
+        $response->assertSee('expired, pending purge');
+        $response->assertDontSee('1 minute ago');
+    }
+
+    public function test_page_past_the_last_one_redirects_to_the_last_page(): void
+    {
+        StoredFile::factory()->count(21)->create();
+
+        $this->get('/files?page=5')->assertRedirect('/files?page=2');
+    }
+
+    public function test_page_past_the_end_with_no_files_redirects_to_the_first_page(): void
+    {
+        $this->get('/files?page=3')->assertRedirect('/files?page=1');
+    }
+
     public function test_original_file_name_is_html_escaped_in_the_listing(): void
     {
         StoredFile::factory()->create(['original_name' => '<script>alert(1)</script>.pdf']);

@@ -102,7 +102,7 @@
                         } else if (xhr.status === 413) {
                             showAlert($alert, 'danger', 'File is too large.');
                         } else {
-                            showAlert($alert, 'danger', 'Upload failed, try again.');
+                            showAlert($alert, 'danger', ajaxErrorMessage(xhr, 'Upload failed, try again.'));
                         }
                         resetProgress();
                     })

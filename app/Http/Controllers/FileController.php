@@ -8,6 +8,7 @@ use App\Models\StoredFile;
 use App\Services\FileDeletionService;
 use App\Services\FileUploadService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\View\View;
 
 class FileController extends Controller
@@ -17,11 +18,15 @@ class FileController extends Controller
         return view('files.create');
     }
 
-    public function index(): View
+    public function index(): View|RedirectResponse
     {
-        return view('files.index', [
-            'files' => StoredFile::query()->latest('id')->paginate(20),
-        ]);
+        $files = StoredFile::query()->latest('id')->paginate(20);
+
+        if ($files->currentPage() > $files->lastPage()) {
+            return redirect($files->url($files->lastPage()));
+        }
+
+        return view('files.index', ['files' => $files]);
     }
 
     public function store(StoreFileRequest $request, FileUploadService $uploads): JsonResponse

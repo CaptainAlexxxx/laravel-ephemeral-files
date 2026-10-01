@@ -7,10 +7,10 @@
 
     <div id="files-alert"></div>
 
-    @if ($files->isEmpty())
+    @if ($files->total() === 0)
         <p id="empty-state">No files yet. <a href="{{ route('files.create') }}">Upload one</a>.</p>
     @else
-        <table class="table table-striped" id="files-table">
+        <table class="table table-striped" id="files-table" data-previous-page-url="{{ $files->previousPageUrl() }}">
             <thead>
                 <tr>
                     <th>Name</th>
@@ -26,7 +26,7 @@
                         <td>{{ $file->original_name }}</td>
                         <td>{{ \Illuminate\Support\Number::fileSize($file->size) }}</td>
                         <td>{{ $file->created_at->diffForHumans() }}</td>
-                        <td title="{{ $file->expires_at->utc()->format('Y-m-d H:i:s \U\T\C') }}">{{ $file->expires_at->diffForHumans() }}</td>
+                        <td title="{{ $file->expires_at->utc()->format('Y-m-d H:i:s \U\T\C') }}">{{ $file->expires_at->isPast() ? 'expired, pending purge' : $file->expires_at->diffForHumans() }}</td>
                         <td>
                             <button type="button" class="btn btn-sm btn-danger delete-file" data-url="{{ route('files.destroy', $file) }}">Delete</button>
                         </td>
@@ -42,7 +42,22 @@
 @push('scripts')
     <script>
         $(function () {
-            $('#files-table').on('click', '.delete-file', function () {
+            const $table = $('#files-table');
+
+            function afterRowRemoved() {
+                if ($table.find('tbody tr').length > 0) {
+                    return;
+                }
+
+                const previousPageUrl = $table.data('previous-page-url');
+                if (previousPageUrl) {
+                    location.href = previousPageUrl;
+                } else {
+                    location.reload();
+                }
+            }
+
+            $table.on('click', '.delete-file', function () {
                 if (!confirm('Delete this file?')) {
                     return;
                 }
@@ -57,21 +72,17 @@
                     .done(function () {
                         $row.remove();
                         showAlert($('#files-alert'), 'success', 'File deleted.');
-                        if ($('#files-table tbody tr').length === 0) {
-                            location.reload();
-                        }
+                        afterRowRemoved();
                     })
                     .fail(function (xhr) {
                         if (xhr.status === 404) {
                             $row.remove();
                             showAlert($('#files-alert'), 'info', 'File was already deleted.');
-                            if ($('#files-table tbody tr').length === 0) {
-                                location.reload();
-                            }
+                            afterRowRemoved();
                             return;
                         }
 
-                        showAlert($('#files-alert'), 'danger', 'Could not delete the file, try again.');
+                        showAlert($('#files-alert'), 'danger', ajaxErrorMessage(xhr, 'Could not delete the file, try again.'));
                         $button.prop('disabled', false);
                     });
             });
