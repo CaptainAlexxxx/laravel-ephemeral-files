@@ -46,7 +46,7 @@
                                     <span class="badge bg-warning-subtle text-warning-emphasis">{{ $file->expires_at->isPast() ? 'expired, pending purge' : $file->expires_at->diffForHumans(syntax: \Carbon\CarbonInterface::DIFF_ABSOLUTE) }}</span>
                                 </td>
                                 <td>
-                                    <button type="button" class="btn btn-sm btn-outline-danger delete-file" data-url="{{ route('files.destroy', $file) }}">Delete</button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger delete-file" data-url="{{ route('files.destroy', $file) }}" data-name="{{ $file->original_name }}">Delete</button>
                                 </td>
                             </tr>
                         @endforeach
@@ -61,12 +61,33 @@
             @endif
         @endif
     </div>
+
+    <div class="modal fade" id="delete-file-modal" tabindex="-1" aria-labelledby="delete-file-modal-label" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="delete-file-modal-label">Delete file</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    Delete <strong id="delete-file-modal-name"></strong>? The deletion notice is sent by email.
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="delete-file-modal-confirm">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
 @endsection
 
 @push('scripts')
     <script>
         $(function () {
             const $table = $('#files-table');
+            const $modal = $('#delete-file-modal');
+            const modal = new bootstrap.Modal($modal[0]);
+            let $pendingButton = null;
 
             function afterRowRemoved() {
                 if ($table.find('tbody tr').length === 0) {
@@ -75,14 +96,22 @@
             }
 
             $table.on('click', '.delete-file', function () {
-                if (!confirm('Delete this file?')) {
+                $pendingButton = $(this);
+                $('#delete-file-modal-name').text($pendingButton.data('name'));
+                modal.show();
+            });
+
+            $('#delete-file-modal-confirm').on('click', function () {
+                const $button = $pendingButton;
+                if (!$button) {
                     return;
                 }
 
-                const $button = $(this);
+                const $confirmButton = $(this);
                 const $row = $button.closest('tr');
                 const url = $button.data('url');
 
+                $confirmButton.prop('disabled', true);
                 $button.prop('disabled', true);
 
                 $.ajax({ url: url, method: 'DELETE' })
@@ -101,7 +130,18 @@
 
                         showAlert($('#files-alert'), 'danger', ajaxErrorMessage(xhr, 'Could not delete the file, try again.'));
                         $button.prop('disabled', false);
+                    })
+                    .always(function () {
+                        $confirmButton.prop('disabled', false);
+                        modal.hide();
                     });
+            });
+
+            $modal.on('hidden.bs.modal', function () {
+                if ($pendingButton) {
+                    $pendingButton.prop('disabled', false);
+                }
+                $pendingButton = null;
             });
         });
     </script>
