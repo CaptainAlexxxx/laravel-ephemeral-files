@@ -216,6 +216,20 @@ class FileUploadTest extends TestCase
         $this->get('/storage/'.$row->path)->assertStatus(404);
         $response = $this->get('/'.$row->path);
         $this->assertNotEquals(200, $response->getStatusCode());
+
+        // The two checks above only rule out Laravel routing to the file. In production
+        // nginx serves public/ directly, so the real guarantee has to come from the disk
+        // config itself: the configured root must sit outside public/, and the disk must
+        // not be flagged to be served by the framework. Read straight from config, not
+        // from Storage::fake(), since the fake disk's path is a test-only tmp directory
+        // that would trivially pass this check regardless of what production is set to.
+        $diskConfig = config('filesystems.disks.'.config('files.disk'));
+
+        $this->assertFalse($diskConfig['serve'] ?? false);
+        $this->assertStringStartsNotWith(
+            rtrim(public_path(), '/\\'),
+            rtrim($diskConfig['root'], '/\\')
+        );
     }
 
     protected function pdfBytesOfSize(int $totalBytes): string
