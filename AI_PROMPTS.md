@@ -59,6 +59,29 @@ What I changed:
 - The docs agent stated that the RabbitMQ driver v15 requires Laravel 13. The package supports Laravel 10 through 13. Fixed in `docs/TASK.md`.
 - The infrastructure agent left a test script in the container (`/tmp/dispatch_test.php`) and added a `.dockerignore` that had no effect, because the build context is `docker/php`. Both removed.
 
+### 3. Plan, and the part where the model was wrong
+
+```
+Plan mode, no code. Design the DB schema, the classes and what each one
+owns, the flow for upload, manual delete and scheduled purge, the compose
+services, and which test covers which requirement ID. For every choice
+with an alternative (scheduler vs delayed job, queue package vs raw AMQP)
+give the trade-off. List the risks and what you need me to confirm.
+```
+
+Why: I approve the shape of the solution before any file changes, and every test is tied to a requirement ID, so gaps in coverage are visible in the plan already.
+
+Result: [`docs/PLAN.md`](docs/PLAN.md). Two things I did not accept as given.
+
+**When to publish the notification.** Both the analysis in step 1 and the first plan draft said: delete the row, then dispatch the notification with `afterCommit()`. That is the textbook answer for "do not send a notice for a rolled back change", and the model gave it with full confidence. It is wrong for this task. If RabbitMQ is down at that moment, the row is already deleted and committed, the publish throws, and the notice is gone. The file was deleted and nobody was told, which is the one thing the task explicitly asks to avoid. I asked for the failure modes of each option instead of the pattern name, and changed the design: the conditional `DELETE` and the publish run inside one DB transaction, the file on disk is removed after commit. A broker outage now rolls the delete back, the user gets an error and the purge retries a minute later. The leftover risk, publish succeeded and then the commit failed, gives a duplicate email at worst, never a lost one. I think this is the most important correction in the project: the model optimised for a well-known rule and did not check it against what the task actually requires.
+
+**"The stack works."** The infrastructure agent reported all checks green on my Windows machine. I cloned the repo onto a Linux filesystem (WSL) and ran exactly what the README will say. Two failures:
+
+- MySQL initialised for over 100 seconds on a cold volume and the healthcheck gave up first, so nothing started. The check also pinged the socket, which answers while MySQL's temporary init server is running.
+- Every page returned 500: the bind mount belongs to the host user and php-fpm runs as `www-data`, so compiled views could not be written. Docker Desktop on Windows hides this.
+
+Both are in step 0 of the plan. A reviewer on Linux or macOS would have seen a broken app on the first request, and the agent had no way to notice it from the machine it ran on.
+
 ## Agent findings
 
 Filled in as qa-tester and reviewer report. Rejected findings stay in the table with the reason.
