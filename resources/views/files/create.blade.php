@@ -3,19 +3,27 @@
 @section('title', 'Upload')
 
 @section('content')
-    <div class="card" style="max-width: 32rem; margin: 0 auto;">
-        <div class="card-body">
-            <h1 class="h4 card-title mb-3">Upload a file</h1>
+    <div class="card shadow-sm">
+        <div class="card-body p-4">
+            <h1 class="h4 card-title mb-1">Upload a file</h1>
+            <p class="text-muted small mb-4">
+                PDF or DOCX up to {{ (int) (config('files.max_size_kb') / 1024) }} MB.
+                Files are deleted automatically after
+                @if (config('files.ttl_minutes') % 60 === 0)
+                    {{ (int) (config('files.ttl_minutes') / 60) }} hours.
+                @else
+                    {{ config('files.ttl_minutes') }} minutes.
+                @endif
+            </p>
 
             <div id="upload-alert"></div>
 
             <form id="upload-form" data-max-kb="{{ config('files.max_size_kb') }}">
                 <div class="mb-3">
                     <input type="file" class="form-control" id="file" name="file" accept=".pdf,.docx">
-                    <div class="form-text">PDF or DOCX, up to {{ (int) (config('files.max_size_kb') / 1024) }} MB.</div>
                 </div>
 
-                <div class="progress mb-3" style="height: 1rem; display: none;" id="upload-progress-wrap">
+                <div class="progress mb-3" id="upload-progress-wrap" style="display: none;">
                     <div class="progress-bar" id="upload-progress" role="progressbar" style="width: 0%"></div>
                 </div>
 

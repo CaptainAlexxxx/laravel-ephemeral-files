@@ -1,0 +1,8 @@
+.text-truncate-name {
+    display: inline-block;
+    max-width: 20rem;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+}

@@ -11,9 +11,10 @@
         href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css"
         integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB"
         crossorigin="anonymous">
+    <link rel="stylesheet" href="{{ asset('css/app.css') }}">
 </head>
-<body>
-    <nav class="navbar navbar-expand navbar-dark bg-dark">
+<body class="bg-body-tertiary">
+    <nav class="navbar navbar-expand-sm navbar-dark bg-dark border-bottom">
         <div class="container">
             <a class="navbar-brand" href="{{ route('files.create') }}">{{ config('app.name', 'Laravel') }}</a>
             <div class="navbar-nav">
@@ -24,7 +25,9 @@
     </nav>
 
     <main class="container py-4">
-        @yield('content')
+        <div class="col-lg-8 mx-auto">
+            @yield('content')
+        </div>
     </main>
 
     <script
