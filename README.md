@@ -1,58 +1,101 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Ephemeral Files
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Temporary storage for PDF and DOCX files. Every file is deleted 24 hours after upload, and every deletion, manual or automatic, sends an email notice through RabbitMQ.
 
-## About Laravel
+Laravel 13, PHP 8.4, MySQL 8.4, RabbitMQ 3, Bootstrap 5 + jQuery, Docker Compose.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Quick start
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
-
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+Requires Docker with Compose v2. Nothing else on the host.
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+cp .env.example .env
+docker compose up -d
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+The first start installs Composer dependencies, generates the app key and runs migrations inside the container, so it takes a minute or two. `docker compose ps` shows `app` as `healthy` when it is done.
 
-## Contributing
+| What | URL | Credentials |
+|---|---|---|
+| App, upload page | http://localhost:8080 | |
+| App, file management | http://localhost:8080/files | |
+| RabbitMQ management | http://localhost:15672 | guest / guest |
+| Mailpit (caught emails) | http://localhost:8025 | |
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+On Linux, if your user id is not 1000, set `UID` and `GID` in `.env` to the output of `id -u` and `id -g` before the first start. The PHP containers run as that user so they can write to the mounted project directory. On Docker Desktop (Windows, macOS) this does not matter.
 
-## Code of Conduct
+Ports are bound to `127.0.0.1` only. Change `APP_PORT` in `.env` if 8080 is taken.
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+## How to check it
 
-## Security Vulnerabilities
+1. Open http://localhost:8080 and upload a PDF or DOCX. The progress bar fills and the page does not reload.
+2. Try a file over 10 MB, or a text file renamed to `.pdf`: you get a validation error.
+3. Open http://localhost:8080/files. The file is listed with its expiry time. Delete it.
+4. Open Mailpit at http://localhost:8025: there is an email to `NOTIFY_EMAIL` saying the file was deleted manually.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+**Automatic deletion without waiting 24 hours.** Set a short TTL in `.env`. The TTL is applied at upload time and php-fpm reads `.env` on every request, so no restart is needed:
 
-## License
+```bash
+FILE_TTL_MINUTES=1
+```
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Upload a file and wait about two minutes. The scheduler runs the purge every minute, the file disappears from `/files`, and Mailpit gets an email saying it expired. Files uploaded before the change keep their original expiry. The purge can also be run by hand:
+
+```bash
+docker compose exec app php artisan files:purge-expired
+```
+
+**Seeing the message in RabbitMQ.** Stop the worker, delete a file, and look at the queue:
+
+```bash
+docker compose stop queue-worker
+```
+
+The `default` queue at http://localhost:15672/#/queues holds one message and Mailpit gets nothing. Start the worker again and the email arrives:
+
+```bash
+docker compose start queue-worker
+```
+
+## Tests
+
+```bash
+docker compose exec app php artisan test
+```
+
+Feature tests run on SQLite in memory with notifications faked, so they need no broker. They cover upload validation (size boundary at exactly 10 MB, content type vs extension, DOCX detection), the management page, deletion through both paths, the TTL boundary, purge idempotency, the manual delete vs purge race, and the notification connection and recipient. Fixtures are real files: Laravel's `UploadedFile::fake()` guesses the mime type from the file name, which would make the content checks pass whatever the bytes are.
+
+Code style: `docker compose exec app ./vendor/bin/pint --test`.
+
+## Architecture
+
+```
+upload    browser --AJAX--> FileController@store --> StoreFileRequest --> FileUploadService --> private disk + stored_files row
+
+manual    browser --AJAX--> FileController@destroy --.
+                                                     |--> FileDeletionService --> RabbitMQ --> queue-worker --> mail (Mailpit)
+expired   scheduler (every minute) --> files:purge-expired --'
+```
+
+Docker services: `app` (php-fpm), `nginx`, `mysql`, `rabbitmq`, `queue-worker` (`queue:work rabbitmq`), `scheduler` (`schedule:work`), `mailpit`.
+
+Key decisions. The full list with rejected alternatives is in [docs/TASK.md](docs/TASK.md), the step plan in [docs/PLAN.md](docs/PLAN.md).
+
+- **One deletion path.** The controller and the purge command both call `FileDeletionService::delete()`. Delete logic, notification and race handling live in one place.
+- **Expiry is a sweep, not a delayed job.** `expires_at` is stored on upload and `files:purge-expired` runs every minute. A job delayed by 24 hours disappears if the queue is purged and is hard to test. The sweep is idempotent and the TTL is configurable with `FILE_TTL_MINUTES`.
+- **The notice is published inside the delete transaction.** If RabbitMQ is down, the publish throws and the delete rolls back: the user sees an error, the purge retries a minute later, and no file is deleted without a notice. Publishing after commit would lose the notice in exactly that case.
+- **Exactly one notice per file.** The delete is a conditional `DELETE ... WHERE id = ?`. When a manual delete and the purge hit the same file, the second one waits on the row lock, then deletes 0 rows and sends nothing.
+- **The notification carries plain values.** The row no longer exists when the worker runs, so a serialized model could not be loaded back.
+- **File type comes from content.** The detected type must be PDF or DOCX and must match the extension. Files are stored on a private disk under generated UUID names. Original names are only displayed, always escaped.
+- **Size limit is enforced by Laravel.** nginx and PHP accept up to 12 MB, Laravel rejects above 10 MB with a JSON 422. Anything over 12 MB is cut by nginx with 413, which the upload page also handles.
+
+## Known limits
+
+- No authentication: anyone who can open the app can upload and delete. The task does not ask for users.
+- A file is deleted between 24 hours and 24 hours plus one minute after upload, because of the sweep interval.
+- If the process dies after the delete transaction commits but before the file is removed from disk, the file stays on disk without a row and nothing logs it. A periodic orphan cleanup would close this, it is left out of scope.
+- `.env.example` has `APP_DEBUG=true`: this is a local development stack and error pages show stack traces.
+
+## How AI was used
+
+Built with Claude Code in a conductor setup: I approve the plan and every diff, an implementer agent writes code, separate QA and reviewer agents verify it without seeing each other's work. Prompts, agent definitions, findings and the places where the AI was wrong are in [AI_PROMPTS.md](AI_PROMPTS.md).

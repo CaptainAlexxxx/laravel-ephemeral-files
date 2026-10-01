@@ -82,12 +82,67 @@ Result: [`docs/PLAN.md`](docs/PLAN.md). Two things I did not accept as given.
 
 Both are in step 0 of the plan. A reviewer on Linux or macOS would have seen a broken app on the first request, and the agent had no way to notice it from the machine it ran on.
 
+### 4. Implementation, one step per prompt
+
+```
+Implement step N of docs/PLAN.md: <step>. Only this step, only these
+files: <list>. Do not commit. When done, verify on the running stack and
+report the files you touched, the command you used to check it, and
+anything left open.
+```
+
+Why: a small diff I can read in full, and the agent has to prove the step works on the live stack, not just say so. For the deletion core I used Opus instead of Sonnet and spelled out the transaction order in the prompt, because that step is where a plausible-looking mistake costs the most.
+
+What came out of it:
+
+- The deletion step looked done: tests green, row and file gone. The agent then sent a real email through RabbitMQ as the prompt required and the worker failed with "The intl PHP extension is required". `Number::fileSize()` needs `intl` and the image did not have it. Every deletion notice in production would have failed while the test suite stayed green, because tests fake notifications. Fixed in the Dockerfile in its own commit.
+- I ran the purge step and the upload step in parallel to save time. They share one database, and the purge agent's cleanup deleted rows the upload agent had just created. Nothing broke in the code, but the upload agent saw rows vanish and had to work out why. Parallel agents need separate data, not only separate files.
+- The upload page JS was never run in a browser by the agent, it said so honestly. I drove it myself in a browser: upload with progress, a text file renamed to `.pdf`, delete from the list, email in Mailpit.
+
+### 5. Independent verification
+
+```
+Run the qa-tester and reviewer agents in parallel on the current commit.
+Do not fix anything. Merge their findings into one list, deduplicate,
+mark each as bug / risk / style.
+```
+
+qa-tester works from `docs/TASK.md` and may read code only to find routes and field names. reviewer has no edit tools at all.
+
+What came out of it:
+
+- QA's first run had six failing content-type tests: a text file named `.pdf` was accepted. The app was fine. `UploadedFile::fake()->createWithContent()` in Laravel guesses the mime type from the file name, not from the bytes, so the test never sent what it claimed to send. QA traced it to the framework instead of loosening the assertions, which is exactly what its prompt forbids. Fixtures are now real temp files. The reviewer, running at the same time, flagged the same tests independently.
+- The reviewer confirmed the transactional publish by reading the framework and driver code (no deferral path, InnoDB row lock semantics), then found what I had not: the scheduler lock lives 24 hours by default, so a scheduler killed mid-run would stop the purge for a day without any error.
+- Checking the reviewer's DOCX finding, I generated DOCX files with different zip layouts in the container. libmagic reads only the start of the file, so a valid DOCX with large `docProps/` entries before `word/` is reported as plain zip and was rejected. Type detection now checks the zip structure in that case.
+- Second and third review passes ran on the fixes only. The second pass found that the markdown escaping fix leaked backslashes into the plain-text email, and that there was no test for the rollback the whole notification design depends on. The third pass found that the new rollback test was too weak: it mocked the Notification facade, so a regression to after-commit publishing would still pass. A test that cannot fail is worse than no test, because it looks like coverage. It now breaks the real queue push, and I made it go red by enabling `after_commit` before accepting it.
+- The third pass found no issues in application code. That is where I stopped the review loop.
+
 ## Agent findings
 
 Filled in as qa-tester and reviewer report. Rejected findings stay in the table with the reason.
 
 | Finding | Agent | Decision | Reason |
 |---|---|---|---|
+| `withoutOverlapping()` lock lives 24h, a killed scheduler stops the purge for a day | reviewer | accepted | Silent failure of R6. Lock now expires after 5 minutes |
+| No `pcntl` in the image: `queue:work --timeout` and graceful stop do not work | reviewer | accepted | A hung SMTP call would block the worker forever |
+| App healthcheck window too short for a cold `composer install` | reviewer | accepted | Same class of bug as the MySQL one from the clean-clone test |
+| RabbitMQ UI, Mailpit and app published on all interfaces | reviewer | accepted | guest/guest on the LAN. Bound to 127.0.0.1 |
+| `after_commit` for rabbitmq relied on the driver default | reviewer | accepted | The design depends on it, so it is pinned in config |
+| File name rendered as markdown in the email, phishing link possible | reviewer | accepted | Escaped as HTML entities, plain-text part checked too |
+| Invalid UTF-8 file name gives 500 | reviewer | accepted | Now a 422 |
+| Valid DOCX can be detected as plain zip | reviewer | accepted | Structure check, see entry 5 |
+| `expires_at` and `created_at` read the clock twice | reviewer | accepted | Broke AC R4 by a second, one clock read now |
+| Expired rows shown as "1 minute ago", 419 shown as a generic error, empty last page | reviewer | accepted | UI fixes |
+| `composer setup` still calls npm, PHPUnit points at an empty `tests/Unit` | reviewer | accepted | Skeleton leftovers |
+| `UploadedFile::fake()` made content-type tests meaningless | qa-tester | accepted | Real fixtures |
+| No rollback test, R12 untested, temp fixtures left in `/tmp` | reviewer | accepted | Tests added |
+| Rollback test mocked the Notification facade, so deferring the publish with `after_commit` would still pass | reviewer | accepted | The test now breaks the real queue push. Checked red with `after_commit => true` and with `afterCommit()`, green without |
+| R12 test only checked Laravel routes, nginx serves `public/` directly | reviewer | accepted | Asserts the disk root is outside `public/` and not served |
+| README said the scheduler re-reads `.env` every minute | reviewer | accepted | Wrong: `schedule:work` passes its own environment to children. The TTL is read by php-fpm at upload, so the instruction still worked, the explanation was false |
+| `APP_DEBUG=true` in `.env.example` leaks stack traces | reviewer | rejected | Local development stack, the reviewer of this task benefits from real errors. Documented in README |
+| A crash between commit and disk delete leaves an orphan file | reviewer | rejected | Real but needs a crash at a precise moment. A cleanup job is extra scope; documented as a known limit |
+| `UID=1000` breaks hosts with another user id | reviewer | rejected | Auto-detecting it needs root in the entrypoint again. Documented in README |
+| Test DOCX from LibreOffice and Google Docs | reviewer | changed | Could not get those exports here, so I tested the zip layouts instead, which found the real bug above |
 
 ## Rules I hold the output to
 
