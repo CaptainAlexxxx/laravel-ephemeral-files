@@ -59,6 +59,7 @@ Why publish inside the transaction instead of `afterCommit()`:
 
 - `StoreFileRequest`: `required|file|max:{max_size_kb}|extensions:pdf,docx|mimes:pdf,docx`, plus an `after()` check that the extension guessed from content equals the client extension. Without it a PDF renamed to `.docx` passes both rules. Original name longer than 255 characters is rejected instead of failing on insert.
 - Checked a real Word file inside the container: libmagic reports `wordprocessingml.document` and the guessed extension is `docx`, so generic `application/zip` stays rejected.
+- Changed after review: `mimes` was replaced by `App\Support\FileType`. libmagic reads only the first few KB, so a valid DOCX with large `docProps/` entries before `word/` was reported as plain zip and rejected. When libmagic says zip, the zip's central directory is checked for `[Content_Types].xml` and `word/document.xml`. Request and upload service use the same detector.
 - `FileUploadService::store()`: stores as `files/{uuid}.{ext}`, extension and mime taken from content, never from the client. If the insert fails, the stored file is removed.
 - `FileController`: `create` (upload page), `index` (management page, 20 per page, newest first), `store` (JSON 201), `destroy` (route model binding, service returns false -> 404 JSON).
 - Routes: `GET /`, `GET /files`, `POST /files`, `DELETE /files/{storedFile}`. Upload and management are separate pages, as the task asks.
