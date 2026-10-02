@@ -1,5 +1,7 @@
 # Ephemeral Files
 
+[![tests](https://github.com/CaptainAlexxxx/laravel-ephemeral-files/actions/workflows/tests.yml/badge.svg)](https://github.com/CaptainAlexxxx/laravel-ephemeral-files/actions/workflows/tests.yml)
+
 Temporary storage for PDF and DOCX files. Every file is deleted 24 hours after upload, and every deletion, manual or automatic, sends an email notice through RabbitMQ.
 
 Laravel 13, PHP 8.4, MySQL 8.4, RabbitMQ 3, Bootstrap 5 + jQuery, Docker Compose.
@@ -85,7 +87,7 @@ expired   scheduler (every minute) --> files:purge-expired --'
 
 Docker services: `app` (php-fpm), `nginx`, `mysql`, `rabbitmq`, `queue-worker` (`queue:work rabbitmq`), `scheduler` (`schedule:work`), `mailpit`.
 
-Key decisions. The full list with rejected alternatives is in [docs/TASK.md](docs/TASK.md), the step plan in [docs/PLAN.md](docs/PLAN.md).
+Main decisions (the full list with rejected alternatives is in [docs/TASK.md](docs/TASK.md), the step plan in [docs/PLAN.md](docs/PLAN.md)):
 
 - **One deletion path.** The controller and the purge command both call `FileDeletionService::delete()`. Delete logic, notification and race handling live in one place.
 - **Expiry is a sweep, not a delayed job.** `expires_at` is stored on upload and `files:purge-expired` runs every minute. A job delayed by 24 hours disappears if the queue is purged and is hard to test. The sweep is idempotent and the TTL is configurable with `FILE_TTL_MINUTES`.
@@ -95,23 +97,24 @@ Key decisions. The full list with rejected alternatives is in [docs/TASK.md](doc
 - **File type comes from content.** The detected type must be PDF or DOCX and must match the extension. Files are stored on a private disk under generated UUID names. Original names are only displayed, always escaped.
 - **Size limit is enforced by Laravel.** nginx and PHP accept up to 12 MB, Laravel rejects above 10 MB with a JSON 422. Anything over 12 MB is cut by nginx with 413, which the upload page also handles.
 
-## Trade-offs I would expect questions about
+## Trade-offs
 
-- **`FileType` uses static methods.** It is a pure function of the file bytes with no state and no I/O beyond reading the upload, so there is nothing to swap or mock. Tests run it on real files. If detection ever needed configuration or an external service, it would become an injected class.
-- **Services use facades (`DB`, `Storage`, `Notification`) instead of injected contracts.** This is the Laravel default and the test fakes (`Storage::fake()`, `Notification::fake()`) cover them. Injecting `ConnectionInterface` and `Filesystem\Factory` would add constructor noise without changing what can be tested here.
-- **No interfaces.** Every service has exactly one implementation. An interface per class would be ceremony; one can be extracted the day a second implementation exists.
-- **Hard delete, no soft deletes.** The task says files are deleted. The notice carries everything worth keeping (name, size, reason, times), so a soft-deleted row would only be dead data.
-- **RabbitMQ through a Laravel queue driver, not a hand-written publisher.** Retries, failed jobs and queued notifications come with the framework. The cost is that the driver does not use publisher confirms, so a message can in theory be lost in flight after the broker accepted the connection. That is far less likely than a broker outage, which is covered.
-- **Publish inside the transaction holds a row lock for the duration of the publish.** That is a few milliseconds per file and only affects concurrent deletes of the same file, which is the race it is meant to serialise.
-- **Expired files are removed within a minute of `expires_at`.** That is the scheduler granularity, and for a 24 hour retention it is 0.07%. A run with nothing to delete costs one indexed query on `expires_at`; when there is work, rows are processed in chunks of 100 with `chunkById`, so memory stays flat however many files expire at once. Running the purge every few seconds would add queries without making retention any more correct.
-- **`APP_DEBUG=true` and `guest/guest` for RabbitMQ.** Local development defaults so the stack starts with one command. Ports are bound to `127.0.0.1`. A production setup would use real credentials and debug off.
+Places where I chose the simpler option on purpose:
+
+- `FileType` has static methods. It is a pure function of the file content with no state, so there is nothing to inject or mock. Tests run it on real files.
+- Services use Laravel facades (`DB`, `Storage`, `Notification`) rather than injected contracts. `Storage::fake()` and `Notification::fake()` cover them in tests, and injection would only add constructor noise here.
+- No interfaces. Each service has one implementation; an interface can be extracted when a second one appears.
+- Rows are hard deleted. The task asks for deletion, and the email keeps the name, size, reason and times.
+- RabbitMQ is used through a Laravel queue driver, so retries and failed jobs come with the framework. The driver does not use publisher confirms, so a message could in theory be lost after the broker accepted it. That is much less likely than the broker being down, which is handled.
+- The publish runs inside the delete transaction, so the row lock is held for the publish, a few milliseconds. It only affects two deletes of the same file, which is exactly the race it serialises.
+- Expired files are removed within a minute of `expires_at`, the scheduler interval. A run with nothing to do is one indexed query, and expired rows are processed 100 at a time with `chunkById`, so memory does not grow with the number of files.
+- `.env.example` uses `APP_DEBUG=true` and `guest/guest` for RabbitMQ so the stack starts with one command. Ports are bound to `127.0.0.1`. Production would use real credentials and debug off.
 
 ## Known limits
 
-- No authentication: anyone who can open the app can upload and delete. The task does not ask for users.
-- If the process dies after the delete transaction commits but before the file is removed from disk, the file stays on disk without a row and nothing logs it. A periodic orphan cleanup would close this, it is left out of scope.
-- `.env.example` has `APP_DEBUG=true`: this is a local development stack and error pages show stack traces.
+- No authentication: anyone who can open the app can upload and delete. The task does not mention users.
+- If the process dies after the delete commits but before the file is removed from disk, the file stays on disk without a row. A periodic orphan cleanup would fix it; it is out of scope.
 
 ## How AI was used
 
-Built with Claude Code in a conductor setup: I approve the plan and every diff, an implementer agent writes code, separate QA and reviewer agents verify it without seeing each other's work. Prompts, agent definitions, findings and the places where the AI was wrong are in [AI_PROMPTS.md](AI_PROMPTS.md).
+Built with Claude Code. I planned and reviewed every diff, agents wrote the code, and separate QA and reviewer agents checked it. Prompts, agent roles, findings and the places where the AI got it wrong are in [AI_PROMPTS.md](AI_PROMPTS.md).
