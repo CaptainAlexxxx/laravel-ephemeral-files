@@ -34,6 +34,10 @@ class FileDeletionNotificationTest extends TestCase
 
         $this->deleteJson("/files/{$file->id}")->assertOk();
 
+        // the delete itself never touches the broker
+        Notification::assertNothingSent();
+
+        $this->artisan('notices:publish')->assertSuccessful();
         Notification::assertSentTimes(FileDeletedNotification::class, 1);
 
         Notification::assertSentTo(
@@ -60,6 +64,7 @@ class FileDeletionNotificationTest extends TestCase
         $this->assertTrue($firstResult);
         $this->assertFalse($secondResult);
 
+        $this->artisan('notices:publish')->assertSuccessful();
         Notification::assertSentTimes(FileDeletedNotification::class, 1);
     }
 
@@ -75,6 +80,7 @@ class FileDeletionNotificationTest extends TestCase
         // manual delete loses: the row is already gone
         $this->deleteJson("/files/{$file->id}")->assertStatus(404);
 
+        $this->artisan('notices:publish')->assertSuccessful();
         Notification::assertSentTimes(FileDeletedNotification::class, 1);
     }
 
@@ -123,6 +129,7 @@ class FileDeletionNotificationTest extends TestCase
         $this->artisan('files:purge-expired')->assertSuccessful();
 
         $this->assertDatabaseCount('stored_files', 0);
+        $this->artisan('notices:publish')->assertSuccessful();
         Notification::assertSentTimes(FileDeletedNotification::class, 1);
     }
 }

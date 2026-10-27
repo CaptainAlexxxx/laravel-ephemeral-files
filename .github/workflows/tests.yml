@@ -9,13 +9,36 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: ephemeral_files_test
+          MYSQL_ROOT_PASSWORD: password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ppassword"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+
+    env:
+      # phpunit.xml defaults to SQLite, real env vars win. MySQL is needed for the row lock race test.
+      DB_CONNECTION: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: ephemeral_files_test
+      DB_USERNAME: root
+      DB_PASSWORD: password
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.4'
-          extensions: pdo_sqlite, sqlite3, zip, intl, fileinfo, sockets, bcmath
+          extensions: pdo_mysql, zip, intl, fileinfo, sockets, bcmath
           coverage: none
 
       - name: Cache composer dependencies

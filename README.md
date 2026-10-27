@@ -53,7 +53,16 @@ Upload a file and wait about two minutes. The scheduler runs the purge every min
 docker compose exec app php artisan files:purge-expired
 ```
 
-**Seeing the message in RabbitMQ.** Stop the worker, delete a file, and look at the queue:
+**Seeing an unpublished notice.** Every deletion first writes a row to `deletion_notices` with `published_at` empty, and the scheduler publishes it within a minute. To see one waiting, stop the scheduler, delete a file and query the table:
+
+```bash
+docker compose stop scheduler
+docker compose exec mysql mysql -uephemeral_files -ppassword ephemeral_files -e "select id, original_name, reason, published_at from deletion_notices"
+```
+
+`published_at` is NULL until the notice is sent. Publish by hand with `docker compose exec app php artisan notices:publish`, or start the scheduler again (`docker compose start scheduler`).
+
+**Seeing the message in RabbitMQ.** Stop the worker, delete a file, wait up to a minute for the publisher, and look at the queue:
 
 ```bash
 docker compose stop queue-worker
@@ -71,7 +80,7 @@ docker compose start queue-worker
 docker compose exec app php artisan test
 ```
 
-Feature tests run on SQLite in memory with notifications faked, so they need no broker. They cover upload validation (size boundary at exactly 10 MB, content type vs extension, DOCX detection), the management page, deletion through both paths, the TTL boundary, purge idempotency, the manual delete vs purge race, and the notification connection and recipient. Fixtures are real files: Laravel's `UploadedFile::fake()` guesses the mime type from the file name, which would make the content checks pass whatever the bytes are.
+Feature tests run on SQLite in memory by default (CI runs them on MySQL 8.4) with notifications faked, so they need no broker. One test needs MySQL and is skipped on SQLite: a real second process races a delete on the same row while the first holds the row lock, and exactly one notice row results. To run it locally use `DB_CONNECTION=mysql` with a reachable test database. They cover upload validation (size boundary at exactly 10 MB, content type vs extension, DOCX detection), the management page, deletion through both paths, the TTL boundary, purge idempotency, the manual delete vs purge race, and the notification connection and recipient. Fixtures are real files: Laravel's `UploadedFile::fake()` guesses the mime type from the file name, which would make the content checks pass whatever the bytes are.
 
 Code style: `docker compose exec app ./vendor/bin/pint --test`.
 
@@ -81,18 +90,21 @@ Code style: `docker compose exec app ./vendor/bin/pint --test`.
 upload    browser --AJAX--> FileController@store --> StoreFileRequest --> FileUploadService --> private disk + stored_files row
 
 manual    browser --AJAX--> FileController@destroy --.
-                                                     |--> FileDeletionService --> RabbitMQ --> queue-worker --> mail (Mailpit)
+                                                     |--> FileDeletionService --> deletion_notices row (same transaction)
 expired   scheduler (every minute) --> files:purge-expired --'
+
+notice    scheduler (every minute) --> notices:publish --> RabbitMQ --> queue-worker --> mail (Mailpit)
 ```
 
-Docker services: `app` (php-fpm), `nginx`, `mysql`, `rabbitmq`, `queue-worker` (`queue:work rabbitmq`), `scheduler` (`schedule:work`), `mailpit`.
+Docker services: `app` (php-fpm), `nginx`, `mysql`, `rabbitmq`, `queue-worker` (`queue:work rabbitmq`), `scheduler` (`schedule:work`, runs the purge and the notice publisher), `mailpit`.
 
 Main decisions (the full list with rejected alternatives is in [docs/TASK.md](docs/TASK.md), the step plan in [docs/PLAN.md](docs/PLAN.md)):
 
 - **One deletion path.** The controller and the purge command both call `FileDeletionService::delete()`. Delete logic, notification and race handling live in one place.
 - **Expiry is a sweep, not a delayed job.** `expires_at` is stored on upload and `files:purge-expired` runs every minute. A job delayed by 24 hours disappears if the queue is purged and is hard to test. The sweep is idempotent and the TTL is configurable with `FILE_TTL_MINUTES`.
-- **The notice is published inside the delete transaction.** If RabbitMQ is down, the publish throws and the delete rolls back: the user sees an error, the purge retries a minute later, and no file is deleted without a notice. Publishing after commit would lose the notice in exactly that case.
-- **Exactly one notice per file.** The delete is a conditional `DELETE ... WHERE id = ?`. When a manual delete and the purge hit the same file, the second one waits on the row lock, then deletes 0 rows and sends nothing.
+- **Transactional outbox for the notice.** The delete and an insert into `deletion_notices` happen in one transaction, nothing talks to RabbitMQ there. `notices:publish` runs every minute, pushes unpublished rows to RabbitMQ and sets `published_at`. A broker outage only delays the email: the delete still succeeds and the row waits. Publishing inside the transaction was a dual write (an email could go out for a delete whose commit failed, and the broker call ran under the row lock), publishing after commit loses the notice when the broker is down.
+- **Exactly one notice per file.** The delete is a conditional `DELETE ... WHERE id = ?`. When a manual delete and the purge hit the same file, the second one waits on the row lock, then deletes 0 rows and inserts no notice row.
+- **At-least-once delivery.** The publisher claims each row with `FOR UPDATE SKIP LOCKED`, so overlapping runs do not double-send. If the process dies after the push but before `published_at` is saved, the next run sends that notice again: a rare duplicate email, never a lost one.
 - **The notification carries plain values.** The row no longer exists when the worker runs, so a serialized model could not be loaded back.
 - **File type comes from content.** The detected type must be PDF or DOCX and must match the extension. Files are stored on a private disk under generated UUID names. Original names are only displayed, always escaped.
 - **Size limit is enforced by Laravel.** nginx and PHP accept up to 12 MB, Laravel rejects above 10 MB with a JSON 422. Anything over 12 MB is cut by nginx with 413, which the upload page also handles.
@@ -105,8 +117,7 @@ Places where I chose the simpler option on purpose:
 - Services use Laravel facades (`DB`, `Storage`, `Notification`) rather than injected contracts. `Storage::fake()` and `Notification::fake()` cover them in tests, and injection would only add constructor noise here.
 - No interfaces. Each service has one implementation; an interface can be extracted when a second one appears.
 - Rows are hard deleted. The task asks for deletion, and the email keeps the name, size, reason and times.
-- RabbitMQ is used through a Laravel queue driver, so retries and failed jobs come with the framework. The driver does not use publisher confirms, so a message could in theory be lost after the broker accepted it. That is much less likely than the broker being down, which is handled.
-- The publish runs inside the delete transaction, so the row lock is held for the publish, a few milliseconds. It only affects two deletes of the same file, which is exactly the race it serialises.
+- RabbitMQ is used through a Laravel queue driver, so retries and failed jobs come with the framework. The driver does not use publisher confirms, so a message could in theory be lost after the broker accepted it. That is much less likely than the broker being down, which the outbox handles.
 - Expired files are removed within a minute of `expires_at`, the scheduler interval. A run with nothing to do is one indexed query, and expired rows are processed 100 at a time with `chunkById`, so memory does not grow with the number of files.
 - `.env.example` uses `APP_DEBUG=true` and `guest/guest` for RabbitMQ so the stack starts with one command. Ports are bound to `127.0.0.1`. Production would use real credentials and debug off.
 

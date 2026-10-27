@@ -25,24 +25,36 @@ Found by running a clean clone on a Linux filesystem (WSL ext4), the way a revie
 ```
 DB::transaction:
     affected = DELETE FROM stored_files WHERE id = ?     -- row lock until commit
-    affected == 0 -> return false                         -- someone else deleted it, no notification
-    publish FileDeletedNotification to RabbitMQ           -- failure throws, transaction rolls back
+    affected == 0 -> return false                         -- someone else deleted it, no notice row
+    INSERT INTO deletion_notices (...)                    -- outbox row, published_at NULL
 commit
 Storage::delete(path)  -- after commit; failure is logged, the row is already gone
 return true
 ```
 
-Why publish inside the transaction instead of `afterCommit()`:
-- With `afterCommit()`, if RabbitMQ is down the row is already deleted and the notification is lost: a deletion without a notice, which is exactly what the task forbids.
-- Publishing inside the transaction means a broker failure rolls the delete back. Manual delete returns an error and can be retried, purge picks the file up again next minute.
-- The remaining gaps: "published, then commit fails" (a duplicate notice for a delete that did not happen, the file is deleted and notified again later), and loss in flight, because the driver does not use publisher confirms. Both are far rarer than a broker outage. The worker builds the email from the message alone and never reads the row, so consuming before commit is harmless.
-- The row lock is held for the publish only, a few milliseconds. The queue connection keeps `after_commit => false`, otherwise Laravel would defer the publish until after commit and undo this design.
-- A second deleter racing on the same row blocks on the row lock, then sees 0 affected rows. Exactly one notification.
+```
+notices:publish (every minute, withoutOverlapping(5)):
+    for each unpublished notice (chunkById):
+        DB::transaction:
+            SELECT ... WHERE id = ? AND published_at IS NULL FOR UPDATE SKIP LOCKED
+            none -> skip                                  -- another run has it, or it is done
+            push FileDeletedNotification to RabbitMQ      -- failure throws, row stays unpublished
+            UPDATE published_at = now()
+```
+
+Why an outbox instead of publishing inside the delete transaction (the first version of this plan):
+- Publishing inside the transaction is a dual write. If the push succeeds and COMMIT then fails, an email goes out for a file that was not deleted. The broker call also runs while the row lock is held.
+- Publishing after commit (`afterCommit()`) loses the notice if the broker is down: the row is already deleted.
+- With the outbox the notice row commits or rolls back together with the delete, so there is no deletion without a notice and no notice without a deletion. No network call happens under the row lock. A broker outage only delays the email: rows stay unpublished and the next run sends them.
+- Delivery is at-least-once. If the process dies after the push but before the `published_at` update commits, the notice is sent again on the next run. A duplicate email is accepted, a lost one is not. The driver does not use publisher confirms, so loss in flight after the broker accepted a message is still theoretically possible.
+- Two publisher runs at once do not double-send: `FOR UPDATE SKIP LOCKED` makes the second run pass over a row the first one holds, and the `published_at IS NULL` recheck skips rows already finished.
+- The queue connection keeps `after_commit => false`, so the push happens immediately inside the claim transaction.
+- A second deleter racing on the same stored file blocks on the row lock, then sees 0 affected rows and inserts no notice. Exactly one notice row.
 
 `FileDeletedNotification implements ShouldQueue`:
 - Gets a scalar snapshot (name, size, reason, uploaded at, deleted at), never the model. `SerializesModels` would re-fetch the deleted row in the worker and fail with `ModelNotFoundException`.
 - `onConnection('rabbitmq')` set explicitly, so the requirement does not depend on `QUEUE_CONNECTION`.
-- Mail channel, on-demand route to `config('files.notify_email')`. Empty address: the service throws before deleting anything, a misconfiguration must not silently eat notifications.
+- Mail channel, on-demand route to `config('files.notify_email')`, built by `notices:publish` from the outbox row. Empty address: the service throws before deleting anything, a misconfiguration must not silently eat notifications.
 - Feature tests always fake notifications: there is no broker in CI, and an unfaked test would try to connect to RabbitMQ.
 - Queue is durable and messages are persistent (driver defaults, checked in vendor), so a RabbitMQ restart does not drop pending notices.
 
@@ -52,8 +64,15 @@ Why publish inside the transaction instead of `afterCommit()`:
   - `chunkById`, not `chunk`: deleting inside `chunk()` shifts the offset and skips rows.
   - `<=`: a file exactly at its TTL counts as expired.
   - The first failure stops the run and the command exits non-zero. The only failures that can reach the command are DB or broker errors, both systemic; continuing would retry a dead broker for every file. The next run, a minute later, picks the rest up.
-- Schedule: `everyMinute()->withoutOverlapping()` in `routes/console.php`. Overlaps would be safe anyway because of the conditional delete, the flag just avoids wasted work.
+- Schedule: `everyMinute()->withoutOverlapping(5)` in `routes/console.php`. Overlaps would be safe anyway because of the conditional delete, the flag just avoids wasted work.
 - A file is removed between TTL and TTL + 1 minute.
+
+## Step 3b. Outbox (revision after submission)
+
+- Migration and model `deletion_notices`: `original_name`, `size`, `reason`, `uploaded_at`, `deleted_at`, `published_at` (nullable, indexed), timestamps. Plain values, same as the notification.
+- `FileDeletionService` inserts the row in the delete transaction and no longer touches the broker.
+- `notices:publish` (see Step 2) sends unpublished rows. Scheduled every minute next to the purge, so a notice reaches the queue at most about a minute after the delete.
+- Tests: broker down (delete commits, notice stays unpublished, a later run sends it), publish marks the row, a second run sends nothing, and a MySQL-only test where a real second process races the delete while the first holds the row lock.
 
 ## Step 4. Upload
 
@@ -78,5 +97,5 @@ qa-tester and reviewer run in parallel on the same commit. I triage findings, fi
 ## Step 7. Delivery
 
 - README: one-line description, quick start, links (app, RabbitMQ UI, Mailpit), how to verify (upload, manual delete, email in Mailpit, `FILE_TTL_MINUTES=1` for auto-delete, stop the worker to see the message waiting in RabbitMQ), architecture, decisions, tests, known limits (no auth, no rate limit).
-- GitHub Actions: tests on PHP 8.4 with SQLite.
+- GitHub Actions: tests on PHP 8.4 against a `mysql:8.4` service (the row lock race test needs it), plus `pint --test`.
 - Final clean-clone check on Linux.

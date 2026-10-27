@@ -12,7 +12,7 @@ Scope: `git diff <base>...HEAD` plus any uncommitted changes. The caller gives y
 Checklist, every pass:
 - Every requirement ID in `docs/TASK.md` -> where it is implemented and where it is tested. Flag any requirement with no test.
 - Exactly one deletion code path (`FileDeletionService::delete()`), called from both the controller and the purge command.
-- Notification published exactly once per deletion, inside the delete transaction (broker failure must roll the delete back), on the `rabbitmq` connection, carrying plain values not a model, recipient read from config, never hardcoded.
+- Exactly one `deletion_notices` outbox row per deletion, inserted in the delete transaction with no broker call inside it; `notices:publish` claims rows safely and pushes on the `rabbitmq` connection, carrying plain values not a model, recipient read from config, never hardcoded.
 - Upload security: content-based mime validation, UUID stored filenames, private disk, no path built from user input, original filename never rendered unescaped.
 - Size limits enforced at nginx, php.ini, and Laravel validation, consistent with each other.
 - Purge command is idempotent and chunked, not loading the full table into memory.

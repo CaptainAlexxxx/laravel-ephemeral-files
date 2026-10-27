@@ -8,7 +8,7 @@ Requirements, acceptance criteria, pitfalls and decisions: `docs/TASK.md`. Read 
 
 - Follow Laravel conventions: FormRequest for validation, thin controllers, business logic in services.
 - Manual delete (controller) and automatic delete (purge command) must both go through `FileDeletionService::delete()`. Never duplicate deletion logic.
-- Deletion notifications are queued on the `rabbitmq` connection and published inside the delete transaction, so a broker failure rolls the delete back. Feature tests must fake notifications: there is no broker in CI.
+- `FileDeletionService::delete()` never calls the broker: it inserts a `deletion_notices` outbox row in the delete transaction. `notices:publish` (scheduled every minute) pushes unpublished rows to the `rabbitmq` connection and sets `published_at`. Feature tests must fake notifications: there is no broker in CI.
 - No feature, route, or config key outside what `docs/TASK.md` lists. If something looks missing from the task, ask before adding it.
 - No speculative abstractions: no repository classes, no interfaces with a single implementation, no config options nobody asked for.
 - Every change states which files were touched and the exact command used to verify it (test, pint, artisan command).

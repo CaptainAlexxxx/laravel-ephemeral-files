@@ -26,7 +26,7 @@ Source of truth for implementation, tests and review. Requirement IDs are stable
 - R5: The management page lists files with "expires in", deleting a row removes it from the list without a reload. Deleting an already deleted file returns 404.
 - R6: A file past its `expires_at` is gone after the next scheduler run (at most one minute later).
 - R7: After either deletion path neither the row nor the file on disk exists.
-- R8: With the worker stopped, a deletion leaves a message in the RabbitMQ queue. With the worker running, the email shows up in Mailpit, addressed to `NOTIFY_EMAIL`.
+- R8: With the worker stopped, a deletion leaves a message in the RabbitMQ queue within a minute (the scheduler publishes the outbox row). With the worker running, the email shows up in Mailpit, addressed to `NOTIFY_EMAIL`.
 - R9: A manual delete and a purge run on the same expired file produce one notification.
 - R10: On a clean clone, on Linux as well as Docker Desktop, the command above gives a working app on `http://localhost:8080`.
 - R11: A person new to the project can upload, list, delete, and see the email using only the README.
@@ -39,7 +39,9 @@ Source of truth for implementation, tests and review. Requirement IDs are stable
 - Size limit only in Laravel: nginx answers 413, or PHP drops the body when `post_max_size` is exceeded and `$_FILES` arrives empty. nginx and PHP allow 12M, Laravel cuts at 10M and returns JSON.
 - Type checked by extension only. Content is sniffed, and the detected type must also match the extension.
 - DOCX is a ZIP container and libmagic reports `application/zip` when large `docProps/` entries come before `word/`. On `application/zip` the archive must contain `[Content_Types].xml` and `word/document.xml` to count as DOCX, any other ZIP is rejected.
-- Notification lost or duplicated: published after commit and the broker is down, or published twice when manual delete and purge race. Covered by publishing inside the delete transaction and a conditional delete, see Decisions.
+- Notification lost or duplicated: published after commit and the broker is down, published inside the transaction (a dual write: an email can go out for a delete whose COMMIT failed, and the broker call runs under the row lock), or published twice when manual delete and purge race. Covered by a transactional outbox and a conditional delete, see Decisions.
+- Outbox publisher running twice at once: two runs read the same unpublished row and send it twice. Each row is claimed with `FOR UPDATE SKIP LOCKED` inside a short transaction.
+- Outbox delivery is at-least-once: a crash between the broker push and marking the row published sends the notice again on the next run. A duplicate email is accepted, a lost one is not.
 - Queued notification holding an Eloquent model: the worker re-fetches the already deleted row and fails. The notification carries plain values.
 - Physical file deletion failing silently. Failure is logged with the file id and path.
 - Deleting rows inside `chunk()` skips records because the offset shifts. `chunkById()` is used.
@@ -58,7 +60,8 @@ Source of truth for implementation, tests and review. Requirement IDs are stable
 | `expires_at` column, `files:purge-expired` every minute | A job delayed by 24 hours at upload | A delayed job disappears with a purged queue and is hard to test. A sweep is idempotent and testable with `travel()`. |
 | One `FileDeletionService` for both paths | Delete logic in the controller and in the command | One place for the delete, the notification and the race handling. |
 | Conditional `DELETE ... WHERE id = ?`, notify only when one row was affected | Always notify after delete | Losers of a race see 0 rows and stay silent. No extra locks. |
-| Publish to RabbitMQ inside the delete transaction | Publish after commit (`afterCommit()`) | If the broker is down, after-commit publishing loses the notice for a deletion that already happened. Inside the transaction the delete rolls back and is retried. |
+| Transactional outbox: the delete inserts a `deletion_notices` row in its transaction, `notices:publish` (every minute) pushes it to RabbitMQ and sets `published_at` | Publish inside the delete transaction; publish after commit (`afterCommit()`) | Inside the transaction is a dual write: a network call under the row lock, and an email for a file whose COMMIT failed. After commit loses the notice when the broker is down. The outbox row commits or rolls back with the delete, a broker outage only delays the email, nothing is lost. |
+| Publisher claims rows with `FOR UPDATE SKIP LOCKED` per notice, at-least-once | Exactly-once delivery | Exactly-once needs publisher confirms and consumer dedup. A duplicate email after a crash is rare and harmless. |
 | Private disk, UUID file names | Public disk, original names | No path traversal, no direct links, no name collisions. |
 
 ## Out of scope

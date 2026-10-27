@@ -56,7 +56,7 @@ give the trade-off. List the risks and what you need me to confirm.
 
 Result: [`docs/PLAN.md`](docs/PLAN.md). Two things I did not take as given.
 
-The model proposed to delete the row and then dispatch the notification with `afterCommit()`. That is the usual way to avoid notifying about a rolled back change, but here it loses the notice when RabbitMQ is down: the row is already deleted, the publish fails, nobody is told. The task asks for a notice on every deletion, so I changed the order. The delete and the publish now run in one transaction and the file is removed from disk after commit. If the broker is down, the delete rolls back and the purge retries a minute later. The worst remaining case is a duplicate email, not a missing one. This was the most important correction in the project.
+The model proposed to delete the row and then dispatch the notification with `afterCommit()`. That is the usual way to avoid notifying about a rolled back change, but here it loses the notice when RabbitMQ is down: the row is already deleted, the publish fails, nobody is told. The task asks for a notice on every deletion, so I changed the order. The delete and the publish now run in one transaction and the file is removed from disk after commit. If the broker is down, the delete rolls back and the purge retries a minute later. The worst remaining case is a duplicate email, not a missing one. This was the most important correction in the project. Note: I later found this design was itself a dual write and replaced it with a transactional outbox, see [Revision after submission](#revision-after-submission).
 
 The infrastructure agent reported the stack as working on my Windows machine. I cloned the repo onto a Linux filesystem (WSL) and started it the way the README says. It failed twice: MySQL took over 100 seconds to initialise and the healthcheck gave up first, and every page returned 500 because php-fpm could not write to the mounted `storage` directory. Docker Desktop on Windows hides the second one. Both fixes are step 0 of the plan.
 
@@ -109,3 +109,13 @@ mark each as bug / risk / style.
 | `APP_DEBUG=true` in `.env.example` | reviewer | Kept: local stack, real errors help whoever runs it |
 | Orphan file if the process dies between commit and disk delete | reviewer | Kept, listed in README known limits |
 | `UID=1000` default breaks hosts with another user id | reviewer | Kept, documented in README |
+
+## Revision after submission
+
+After I submitted, I reread the deletion service and found a flaw in the choice I had called the most important correction. Publishing to RabbitMQ inside the delete transaction is a dual write: two systems, one transaction. If the publish succeeds and then COMMIT fails, an email goes out for a file that was not deleted, and I had written that gap off as rare. It also makes a network call while the row lock is held. My earlier fix (publish inside instead of after commit) only picked which of the two failures I preferred.
+
+A transactional outbox removes the choice. The delete now inserts a `deletion_notices` row in the same transaction, so the notice exists if and only if the delete committed. A command, `notices:publish`, runs every minute, pushes unpublished rows to RabbitMQ and sets `published_at`. A broker outage no longer fails the delete, it only delays the email. The trade is at-least-once delivery: if the process dies between the push and saving `published_at`, that notice is sent again. I accept a rare duplicate over a wrong or missing email. Two publisher runs do not double-send because each row is claimed with `FOR UPDATE SKIP LOCKED`.
+
+What changed: `FileDeletionService` no longer touches the broker, a new table, model and command, a schedule entry, the rollback tests became outbox tests, and CI now runs the suite on MySQL 8.4. The CI change matters: the exactly-one-notice race (R9) was only tested with SQLite, which has no row locks. There is now a MySQL-only test where a real second process races the delete while the first holds the lock. I checked it fails when the affected-rows check is removed.
+
+The lesson for me: when a design needs "it rolls back, so it is fine", ask what happens when the other system succeeds and my own commit fails.

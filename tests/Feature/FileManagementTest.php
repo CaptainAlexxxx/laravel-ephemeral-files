@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use App\Models\StoredFile;
-use App\Notifications\FileDeletedNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
@@ -57,7 +56,7 @@ class FileManagementTest extends TestCase
         $second = $this->deleteJson("/files/{$file->id}");
         $second->assertStatus(404);
 
-        Notification::assertSentTimes(FileDeletedNotification::class, 1);
+        $this->assertDatabaseCount('deletion_notices', 1);
     }
 
     public function test_expired_file_waiting_for_purge_is_labelled_as_expired(): void
