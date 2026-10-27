@@ -4,6 +4,8 @@ namespace App\Models;
 
 use App\Enums\DeletionReason;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\MassPrunable;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -12,6 +14,18 @@ use Illuminate\Database\Eloquent\Model;
 #[Fillable(['original_name', 'size', 'reason', 'recipient', 'uploaded_at', 'deleted_at', 'published_at'])]
 class DeletionNotice extends Model
 {
+    use MassPrunable;
+
+    /**
+     * Only published rows: an unpublished one still has to be sent.
+     *
+     * @return Builder<static>
+     */
+    public function prunable(): Builder
+    {
+        return static::query()->where('published_at', '<=', now()->subDays(config('files.notice_retention_days')));
+    }
+
     /**
      * @return array<string, string>
      */
