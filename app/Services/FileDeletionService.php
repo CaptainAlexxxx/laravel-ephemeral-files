@@ -27,7 +27,7 @@ final class FileDeletionService
             throw new RuntimeException('NOTIFY_EMAIL is not configured, refusing to delete without a notification.');
         }
 
-        $deleted = DB::transaction(function () use ($file, $reason): bool {
+        $deleted = DB::transaction(function () use ($file, $reason, $recipient): bool {
             // Conditional delete instead of $file->delete(): when a manual delete and the purge race,
             // the loser blocks on the row lock until the winner commits, then sees 0 rows and stays silent.
             $affected = StoredFile::query()->whereKey($file->getKey())->delete();
@@ -42,6 +42,7 @@ final class FileDeletionService
                 'original_name' => $file->original_name,
                 'size' => $file->size,
                 'reason' => $reason,
+                'recipient' => $recipient,
                 'uploaded_at' => $file->created_at,
                 'deleted_at' => CarbonImmutable::now(),
             ]);

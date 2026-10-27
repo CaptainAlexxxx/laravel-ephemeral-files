@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 /**
  * Outbox row: written in the delete transaction, published to RabbitMQ by notices:publish.
  */
-#[Fillable(['original_name', 'size', 'reason', 'uploaded_at', 'deleted_at', 'published_at'])]
+#[Fillable(['original_name', 'size', 'reason', 'recipient', 'uploaded_at', 'deleted_at', 'published_at'])]
 class DeletionNotice extends Model
 {
     /**

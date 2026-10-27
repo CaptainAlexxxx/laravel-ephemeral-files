@@ -100,6 +100,45 @@ class DeletionOutboxTest extends TestCase
         Notification::assertSentTimes(FileDeletedNotification::class, 1);
     }
 
+    public function test_the_notice_goes_to_the_address_captured_at_delete_time(): void
+    {
+        Notification::fake();
+        config(['files.notify_email' => 'before@example.com']);
+        app(FileDeletionService::class)->delete(StoredFile::factory()->create(), DeletionReason::Manual);
+        $this->assertSame('before@example.com', DeletionNotice::query()->first()->recipient);
+
+        config(['files.notify_email' => 'after@example.com']);
+        $this->artisan('notices:publish')->assertSuccessful();
+
+        Notification::assertSentOnDemand(
+            FileDeletedNotification::class,
+            fn (FileDeletedNotification $n, array $channels, $notifiable) => $notifiable->routes['mail'] === 'before@example.com'
+        );
+    }
+
+    public function test_a_notice_without_a_recipient_is_not_marked_published(): void
+    {
+        Notification::fake();
+        DeletionNotice::query()->create([
+            'original_name' => 'a.pdf',
+            'size' => 1,
+            'reason' => DeletionReason::Manual,
+            'recipient' => '',
+            'uploaded_at' => now(),
+            'deleted_at' => now(),
+        ]);
+
+        try {
+            $this->artisan('notices:publish');
+            $this->fail('Expected a RuntimeException.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('has no recipient', $e->getMessage());
+        }
+
+        Notification::assertNothingSent();
+        $this->assertNull(DeletionNotice::query()->first()->published_at);
+    }
+
     public function test_delete_throws_before_touching_the_row_when_notify_email_is_blank(): void
     {
         config(['files.notify_email' => '']);
