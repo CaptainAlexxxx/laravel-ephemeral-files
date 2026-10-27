@@ -43,7 +43,7 @@ services:
       MYSQL_DATABASE: ${DB_DATABASE:-ephemeral_files}
       MYSQL_USER: ${DB_USERNAME:-ephemeral_files}
       MYSQL_PASSWORD: ${DB_PASSWORD:-password}
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root-password}
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
