@@ -68,13 +68,14 @@ class FileDeletionNotificationTest extends TestCase
         Notification::assertSentTimes(FileDeletedNotification::class, 1);
     }
 
-    public function test_manual_delete_racing_the_purge_command_sends_exactly_one_notification(): void
+    public function test_manual_delete_after_the_purge_command_sends_exactly_one_notification(): void
     {
         $path = 'files/race-with-purge.pdf';
         Storage::disk(config('files.disk'))->put($path, 'content');
         $file = StoredFile::factory()->expired()->create(['path' => $path]);
 
-        // purge wins the race first
+        // sequential, the concurrent race is covered by DeletionRaceMysqlTest
+        // purge deletes the file first
         $this->artisan('files:purge-expired')->assertSuccessful();
 
         // manual delete loses: the row is already gone

@@ -80,7 +80,7 @@ docker compose start queue-worker
 docker compose exec app php artisan test
 ```
 
-Feature tests run on SQLite in memory by default (CI runs them on MySQL 8.4) with notifications faked, so they need no broker. One test needs MySQL and is skipped on SQLite: a real second process races a delete on the same row while the first holds the row lock, and exactly one notice row results. To run it locally use `DB_CONNECTION=mysql` with a reachable test database. They cover upload validation (size boundary at exactly 10 MB, content type vs extension, DOCX detection), the management page, deletion through both paths, the TTL boundary, purge idempotency, the manual delete vs purge race, and the notification connection and recipient. Fixtures are real files: Laravel's `UploadedFile::fake()` guesses the mime type from the file name, which would make the content checks pass whatever the bytes are.
+Feature tests run on SQLite in memory by default (CI runs them on MySQL 8.4) with notifications faked, so they need no broker. One test needs MySQL and is skipped on SQLite: a real second process races a delete on the same row while the first holds the row lock, and exactly one notice row results. To run it locally use `DB_CONNECTION=mysql` with a reachable test database. They cover upload validation (size boundary at exactly 10 MB, content type vs extension, DOCX detection), the management page, deletion through both paths, the TTL boundary, purge idempotency, the manual delete after a purge, and the notification connection and recipient. Fixtures are real files: Laravel's `UploadedFile::fake()` guesses the mime type from the file name, which would make the content checks pass whatever the bytes are.
 
 Code style: `docker compose exec app ./vendor/bin/pint --test`.
 

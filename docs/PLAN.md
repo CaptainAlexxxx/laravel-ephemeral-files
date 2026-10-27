@@ -45,7 +45,7 @@ notices:publish (every minute, withoutOverlapping(5)):
 Why an outbox instead of publishing inside the delete transaction (the first version of this plan):
 - Publishing inside the transaction is a dual write. If the push succeeds and COMMIT then fails, an email goes out for a file that was not deleted. The broker call also runs while the row lock is held.
 - Publishing after commit (`afterCommit()`) loses the notice if the broker is down: the row is already deleted.
-- With the outbox the notice row commits or rolls back together with the delete, so there is no deletion without a notice and no notice without a deletion. No network call happens under the row lock. A broker outage only delays the email: rows stay unpublished and the next run sends them.
+- With the outbox the notice row commits or rolls back together with the delete, so there is no deletion without a notice and no notice without a deletion. No network call happens under the `stored_files` row lock (the publisher does push under the lock of its own outbox row, which nothing else waits on). A broker outage only delays the email: rows stay unpublished and the next run sends them.
 - Delivery is at-least-once. If the process dies after the push but before the `published_at` update commits, the notice is sent again on the next run. A duplicate email is accepted over a missing one. The driver does not use publisher confirms, so loss in flight after the broker accepted a message is still theoretically possible. A job that keeps failing in the worker lands in `failed_jobs` and can be retried.
 - Two publisher runs at once do not double-send: `FOR UPDATE SKIP LOCKED` makes the second run pass over a row the first one holds, and the `published_at IS NULL` recheck skips rows already finished.
 - The queue connection keeps `after_commit => false`, so the push happens immediately inside the claim transaction.
@@ -63,7 +63,7 @@ Why an outbox instead of publishing inside the delete transaction (the first ver
 - `files:purge-expired`: `StoredFile::where('expires_at', '<=', now())->chunkById(100, ...)`, each file through the service with reason `expired`.
   - `chunkById`, not `chunk`: deleting inside `chunk()` shifts the offset and skips rows.
   - `<=`: a file exactly at its TTL counts as expired.
-  - The first failure stops the run and the command exits non-zero. The only failures that can reach the command are DB or broker errors, both systemic; continuing would retry a dead broker for every file. The next run, a minute later, picks the rest up.
+  - The first failure stops the run and the command exits non-zero. The only failures that can reach the command are DB errors or a missing `NOTIFY_EMAIL`, both systemic; the delete never calls the broker. The next run, a minute later, picks the rest up.
 - Schedule: `everyMinute()->withoutOverlapping(5)` in `routes/console.php`. Overlaps would be safe anyway because of the conditional delete, the flag just avoids wasted work.
 - A file is removed between TTL and TTL + 1 minute.
 

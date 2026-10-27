@@ -36,8 +36,9 @@ final class FileDeletionService
                 return false;
             }
 
-            // Outbox row instead of a broker call: no network I/O under the row lock, and the notice
-            // commits or rolls back together with the delete. notices:publish sends it afterwards.
+            // Outbox row instead of a broker call: no network I/O under the stored_files row lock that a
+            // second deleter waits on, and the notice commits or rolls back together with the delete.
+            // notices:publish sends it afterwards.
             DeletionNotice::query()->create([
                 'original_name' => $file->original_name,
                 'size' => $file->size,

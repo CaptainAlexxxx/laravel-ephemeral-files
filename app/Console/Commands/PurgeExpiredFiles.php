@@ -30,7 +30,7 @@ class PurgeExpiredFiles extends Command
         // chunkById, not chunk: deleting rows inside chunk() shifts the offset and skips rows.
         StoredFile::query()->expired()->chunkById(100, function ($files) use ($service, &$count): void {
             foreach ($files as $file) {
-                // No try/catch: only DB or broker errors reach here, both systemic.
+                // No try/catch: the delete only talks to the DB (or fails on a missing NOTIFY_EMAIL), both systemic.
                 // Let the exception stop the run, the next scheduled run retries.
                 if ($service->delete($file, DeletionReason::Expired)) {
                     $count++;
