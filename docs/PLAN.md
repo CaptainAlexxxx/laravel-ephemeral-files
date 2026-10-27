@@ -96,6 +96,6 @@ qa-tester and reviewer run in parallel on the same commit. I triage findings, fi
 
 ## Step 7. Delivery
 
-- README: one-line description, quick start, links (app, RabbitMQ UI, Mailpit), how to verify (upload, manual delete, email in Mailpit, `FILE_TTL_MINUTES=1` for auto-delete, stop the worker to see the message waiting in RabbitMQ), architecture, decisions, tests, known limits (no auth, no rate limit).
+- README: one-line description, quick start, links (app, RabbitMQ UI, Mailpit), how to verify (upload, manual delete, email in Mailpit, `FILE_TTL_MINUTES=1` for auto-delete, stop the worker to see the message waiting in RabbitMQ), architecture, decisions, tests, known limits (no auth).
 - GitHub Actions: tests on PHP 8.4 against a `mysql:8.4` service (the row lock race test needs it), plus `pint --test`.
 - Final clean-clone check on Linux.
