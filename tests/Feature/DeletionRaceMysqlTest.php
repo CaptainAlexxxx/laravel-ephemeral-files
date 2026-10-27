@@ -9,6 +9,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\DatabaseTruncation;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\RunsChildProcess;
 use Tests\TestCase;
 
 /**
@@ -21,6 +22,7 @@ use Tests\TestCase;
 class DeletionRaceMysqlTest extends TestCase
 {
     use DatabaseTruncation;
+    use RunsChildProcess;
 
     protected function setUp(): void
     {
@@ -33,6 +35,8 @@ class DeletionRaceMysqlTest extends TestCase
 
     protected function tearDown(): void
     {
+        $this->terminateChild();
+
         // committed rows would leak into tests that rely on a rolled back transaction
         if (config('database.connections.'.config('database.default').'.driver') === 'mysql') {
             DB::table('deletion_notices')->delete();
@@ -48,48 +52,66 @@ class DeletionRaceMysqlTest extends TestCase
 
         $file = StoredFile::factory()->expired()->create();
         $observer = DB::connection('mysql_observer');
-        $child = null;
-        $pipes = [];
+        $lockHolder = $this->performanceSchemaThreadId();
 
-        DB::listen(function (QueryExecuted $query) use (&$child, &$pipes, $observer): void {
-            if ($child !== null || ! str_starts_with($query->sql, 'insert into `deletion_notices`')) {
+        DB::listen(function (QueryExecuted $query) use ($observer, $lockHolder): void {
+            if ($this->child !== null || ! str_starts_with($query->sql, 'insert into `deletion_notices`')) {
                 return;
             }
 
             // A is inside its transaction and holds the row lock: start B and wait until it is blocked
-            $child = proc_open(
-                [PHP_BINARY, base_path('artisan'), 'files:purge-expired'],
-                [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-                $pipes,
-                base_path(),
-            );
+            $this->startChild([PHP_BINARY, base_path('artisan'), 'files:purge-expired']);
 
-            $this->waitUntilBlocked($observer);
+            $this->waitUntilBlockedBy($lockHolder, $observer);
         });
 
         $this->assertTrue(app(FileDeletionService::class)->delete($file, DeletionReason::Manual));
 
-        $this->assertNotNull($child, 'The second process was never started.');
-        $output = stream_get_contents($pipes[1]).stream_get_contents($pipes[2]);
-        $exit = proc_close($child);
+        $this->assertNotNull($this->child, 'The second process was never started.');
+        $exit = $this->finishChild();
 
-        $this->assertSame(0, $exit, $output);
+        $this->assertSame(0, $exit, $this->childOutput);
         $this->assertDatabaseCount('deletion_notices', 1);
         $this->assertDatabaseMissing('stored_files', ['id' => $file->id]);
     }
 
-    private function waitUntilBlocked(Connection $observer): void
+    /**
+     * The performance_schema id of this test's own connection, the one that holds the row lock.
+     */
+    private function performanceSchemaThreadId(): int
+    {
+        return (int) DB::selectOne(
+            'select thread_id as id from performance_schema.threads where processlist_id = connection_id()'
+        )->id;
+    }
+
+    /**
+     * Only waits blocked by this test's connection count, so an unrelated lock wait on a
+     * shared server cannot end the wait early.
+     */
+    private function waitUntilBlockedBy(int $lockHolder, Connection $observer): void
     {
         $deadline = microtime(true) + 15;
 
         while (microtime(true) < $deadline) {
-            if ($observer->selectOne('select count(*) as c from performance_schema.data_lock_waits')->c > 0) {
+            $blocked = $observer->selectOne(
+                'select count(*) as c from performance_schema.data_lock_waits where blocking_thread_id = ?',
+                [$lockHolder]
+            )->c;
+
+            if ($blocked > 0) {
                 return;
+            }
+
+            if (! $this->childIsRunning()) {
+                $this->drainChild();
+                $this->fail('The second process exited before it blocked on the row lock. Output: '.$this->childOutput);
             }
 
             usleep(100_000);
         }
 
-        $this->fail('The second process never blocked on the row lock.');
+        $this->terminateChild();
+        $this->fail('The second process never blocked on the row lock. Output: '.$this->childOutput);
     }
 }
