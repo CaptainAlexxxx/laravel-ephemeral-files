@@ -13,6 +13,7 @@ use Illuminate\Queue\Connectors\ConnectorInterface;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
+use PhpAmqpLib\Exception\AMQPIOException;
 use RuntimeException;
 use Tests\TestCase;
 
@@ -56,11 +57,12 @@ class DeletionOutboxTest extends TestCase
         try {
             $this->artisan('notices:publish');
             $this->fail('The publish run should have failed while the broker is down.');
-        } catch (RuntimeException $e) {
+        } catch (AMQPIOException $e) {
             $this->assertSame('broker down', $e->getMessage());
         }
 
         $this->assertNull(DeletionNotice::query()->first()->published_at);
+        $this->assertSame(0, DeletionNotice::query()->first()->attempts);
 
         Notification::fake();
         $this->artisan('notices:publish')->assertSuccessful();
@@ -116,27 +118,56 @@ class DeletionOutboxTest extends TestCase
         );
     }
 
-    public function test_a_notice_without_a_recipient_is_not_marked_published(): void
+    public function test_a_bad_row_is_counted_and_does_not_block_the_rows_behind_it(): void
     {
         Notification::fake();
-        DeletionNotice::query()->create([
-            'original_name' => 'a.pdf',
-            'size' => 1,
-            'reason' => DeletionReason::Manual,
-            'recipient' => '',
-            'uploaded_at' => now(),
-            'deleted_at' => now(),
-        ]);
+        $bad = $this->notice('bad.pdf', recipient: '');
+        $good = $this->notice('good.pdf');
 
-        try {
-            $this->artisan('notices:publish');
-            $this->fail('Expected a RuntimeException.');
-        } catch (RuntimeException $e) {
-            $this->assertStringContainsString('has no recipient', $e->getMessage());
-        }
+        $this->artisan('notices:publish')->assertSuccessful();
+
+        Notification::assertSentTimes(FileDeletedNotification::class, 1);
+        $this->assertNull($bad->fresh()->published_at);
+        $this->assertSame(1, $bad->fresh()->attempts);
+        $this->assertNotNull($good->fresh()->published_at);
+    }
+
+    public function test_a_row_over_the_attempt_limit_is_skipped(): void
+    {
+        Notification::fake();
+        config(['files.notice_max_attempts' => 2]);
+        $exhausted = $this->notice('stuck.pdf', attempts: 2);
+
+        $this->artisan('notices:publish')->assertSuccessful();
 
         Notification::assertNothingSent();
-        $this->assertNull(DeletionNotice::query()->first()->published_at);
+        $this->assertNull($exhausted->fresh()->published_at);
+        $this->assertSame(2, $exhausted->fresh()->attempts);
+    }
+
+    public function test_a_row_stops_being_retried_after_the_limit(): void
+    {
+        Notification::fake();
+        config(['files.notice_max_attempts' => 2]);
+        $bad = $this->notice('bad.pdf', recipient: '');
+
+        $this->artisan('notices:publish')->assertSuccessful();
+        $this->artisan('notices:publish')->assertSuccessful();
+        $this->artisan('notices:publish')->assertSuccessful();
+
+        $this->assertSame(2, $bad->fresh()->attempts);
+    }
+
+    public function test_a_broker_error_stops_the_run_and_does_not_count_against_the_row(): void
+    {
+        $this->breakTheRabbitmqConnection();
+        $first = $this->notice('one.pdf');
+        $second = $this->notice('two.pdf');
+
+        $this->assertThrows(fn () => $this->artisan('notices:publish'), AMQPIOException::class);
+
+        $this->assertSame(0, $first->fresh()->attempts);
+        $this->assertSame(0, $second->fresh()->attempts);
     }
 
     public function test_delete_throws_before_touching_the_row_when_notify_email_is_blank(): void
@@ -157,6 +188,21 @@ class DeletionOutboxTest extends TestCase
         $this->assertDatabaseHas('stored_files', ['id' => $file->id]);
         Storage::disk(config('files.disk'))->assertExists($path);
         $this->assertDatabaseCount('deletion_notices', 0);
+    }
+
+    private function notice(string $name, string $recipient = 'admin@example.com', int $attempts = 0): DeletionNotice
+    {
+        $notice = DeletionNotice::query()->create([
+            'original_name' => $name,
+            'size' => 1,
+            'reason' => DeletionReason::Manual,
+            'recipient' => $recipient,
+            'uploaded_at' => now(),
+            'deleted_at' => now(),
+        ]);
+        $notice->forceFill(['attempts' => $attempts])->save();
+
+        return $notice;
     }
 
     /**
@@ -200,32 +246,32 @@ class DeletionOutboxTest extends TestCase
 
                     public function push($job, $data = '', $queue = null)
                     {
-                        throw new RuntimeException('broker down');
+                        throw new AMQPIOException('broker down');
                     }
 
                     public function pushOn($queue, $job, $data = '')
                     {
-                        throw new RuntimeException('broker down');
+                        throw new AMQPIOException('broker down');
                     }
 
                     public function pushRaw($payload, $queue = null, array $options = [])
                     {
-                        throw new RuntimeException('broker down');
+                        throw new AMQPIOException('broker down');
                     }
 
                     public function later($delay, $job, $data = '', $queue = null)
                     {
-                        throw new RuntimeException('broker down');
+                        throw new AMQPIOException('broker down');
                     }
 
                     public function laterOn($queue, $delay, $job, $data = '')
                     {
-                        throw new RuntimeException('broker down');
+                        throw new AMQPIOException('broker down');
                     }
 
                     public function bulk($jobs, $data = '', $queue = null)
                     {
-                        throw new RuntimeException('broker down');
+                        throw new AMQPIOException('broker down');
                     }
 
                     public function pop($queue = null)
