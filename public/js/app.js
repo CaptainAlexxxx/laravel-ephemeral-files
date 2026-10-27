@@ -16,5 +16,9 @@ function ajaxErrorMessage(xhr, fallback) {
         return 'Your session expired. Reload the page and try again.';
     }
 
+    if (xhr.status === 429) {
+        return 'Too many requests. Wait a minute and try again.';
+    }
+
     return fallback;
 }
