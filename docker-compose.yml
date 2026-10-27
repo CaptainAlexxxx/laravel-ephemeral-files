@@ -70,7 +70,7 @@ services:
 
   queue-worker:
     <<: *app-image
-    command: php artisan queue:work rabbitmq --tries=3 --sleep=1
+    command: php artisan queue:work rabbitmq --tries=3 --backoff=10,60,300 --sleep=1
     restart: unless-stopped
     depends_on:
       app:
