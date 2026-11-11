@@ -2,6 +2,8 @@
 
 I built this with Claude Code. Below are the prompts I used, why I wrote them that way, and what I changed after reading the output. The original prompts were in Russian, these are English translations.
 
+In short: agents wrote the code, I set the plan, read every diff and decided what shipped. What I caught: a design that could lose deletion emails, a stack that only worked on Docker Desktop, and after submission a dual write that I replaced with a transactional outbox. The reviewer agent caught a test that could never fail.
+
 ## Setup
 
 I plan, review every diff and decide what gets committed. The code is written by agents with narrow roles, and the agent that writes code is not the one that checks it. The roles are committed in [`.claude/agents/`](.claude/agents/):
@@ -56,7 +58,7 @@ give the trade-off. List the risks and what you need me to confirm.
 
 Result: [`docs/PLAN.md`](docs/PLAN.md). Two things I did not take as given.
 
-The model proposed to delete the row and then dispatch the notification with `afterCommit()`. That is the usual way to avoid notifying about a rolled back change, but here it loses the notice when RabbitMQ is down: the row is already deleted, the publish fails, nobody is told. The task asks for a notice on every deletion, so I changed the order. The delete and the publish now run in one transaction and the file is removed from disk after commit. If the broker is down, the delete rolls back and the purge retries a minute later. The worst remaining case is a duplicate email, not a missing one. This was the most important correction in the project. Note: I later found this design was itself a dual write and replaced it with a transactional outbox, see [Revision after submission](#revision-after-submission).
+The model proposed to delete the row and then dispatch the notification with `afterCommit()`. That is the usual way to avoid notifying about a rolled back change, but here it loses the notice when RabbitMQ is down: the row is already deleted, the publish fails, nobody is told. The task asks for a notice on every deletion, so I changed the order. The delete and the publish now run in one transaction and the file is removed from disk after commit. If the broker is down, the delete rolls back and the purge retries a minute later. That fixed the lost notice, and at submission I thought the worst remaining case was a duplicate email. It wasn't: the design was a dual write, and I replaced it with a transactional outbox after submission, see [Revision after submission](#revision-after-submission).
 
 The infrastructure agent reported the stack as working on my Windows machine. I cloned the repo onto a Linux filesystem (WSL) and started it the way the README says. It failed twice: MySQL took over 100 seconds to initialise and the healthcheck gave up first, and every page returned 500 because php-fpm could not write to the mounted `storage` directory. Docker Desktop on Windows hides the second one. Both fixes are step 0 of the plan.
 
@@ -112,10 +114,12 @@ mark each as bug / risk / style.
 
 ## Revision after submission
 
-After submitting I reread the deletion service and found that publishing to RabbitMQ inside the delete transaction is a dual write. If the publish succeeds and COMMIT then fails, an email goes out for a file that was not deleted. The broker call also runs while the row lock is held. My earlier fix only chose which of the two failures I preferred.
+After submitting I reread the deletion service and found a flaw that the reviewer agent had confirmed and I had accepted: publishing to RabbitMQ inside the delete transaction is a dual write. If the publish succeeds and COMMIT then fails, an email goes out for a file that was not deleted. The broker call also runs while the row lock is held. Moving the publish into the transaction had traded a lost email for a possible wrong one. It didn't remove the failure.
 
 I replaced it with a transactional outbox. The delete inserts a `deletion_notices` row in the same transaction, so the notice exists only if the delete committed. `notices:publish` runs every minute, pushes unpublished rows to RabbitMQ and sets `published_at`. A broker outage now only delays the email. Delivery is at-least-once: a crash between the push and saving `published_at` sends that notice again. I accept a rare duplicate over a wrong or missing email. Two publisher runs do not double-send because each row is claimed with `FOR UPDATE SKIP LOCKED`.
 
 Changes: `FileDeletionService` no longer touches the broker, new table, model and command, a schedule entry, the rollback tests became outbox tests, CI runs the suite on MySQL 8.4. The exactly-one-notice race (R9) had only been tested on SQLite, which has no row locks, so there is now a MySQL-only test where a real second process races the delete. It fails when the affected-rows check is removed.
 
 A review of the outbox then found more: the recipient was read at publish time (now stored on the row), one bad row could stop every run (now counted and skipped after 5 tries), published rows kept file names forever (now pruned after 7 days), and a few comments and docs described the old design. Fixed in follow-up commits.
+
+Lesson: when a design is safe because "it rolls back", ask what happens if the other system succeeds and my own commit fails.
